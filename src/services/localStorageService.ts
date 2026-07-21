@@ -1,0 +1,362 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { UserProfile, VendorBusiness, VendorOffer, VendorOfferRedemption, Reel, HiddenGemSubmission } from '../types';
+
+const KEYS = {
+  USER_PROGRESS: 'PALSAFAR_USER_PROGRESS',
+  APP_PREFERENCES: 'PALSAFAR_APP_PREFERENCES',
+  VENDORS: 'PALSAFAR_VENDORS',
+  VENDOR_OFFERS: 'PALSAFAR_VENDOR_OFFERS',
+  REDEMPTIONS: 'PALSAFAR_REDEMPTIONS',
+  CURRENT_VENDOR: 'PALSAFAR_CURRENT_VENDOR',
+  REELS: 'PALSAFAR_REELS',
+  HIDDEN_GEM_SUBMISSIONS: 'PALSAFAR_HIDDEN_GEM_SUBMISSIONS',
+  ONBOARDING_COMPLETED: 'PALSAFAR_ONBOARDING_COMPLETED',
+};
+
+export interface AppPreferences {
+  selectedCity?: string;
+  budget?: number;
+  interests?: string[];
+  travelPace?: 'relaxed' | 'moderate' | 'fast';
+}
+
+const DEFAULT_USER: UserProfile = {
+  uid: 'guest-user',
+  email: '',
+  phoneNumber: '',
+  displayName: 'Guest User',
+  avatarStyle: 0,
+  role: 'tourist',
+  totalPoints: 0,
+  visitedSpots: [],
+  currentItinerary: [],
+  completedItineraryStops: [],
+  completedActivities: [],
+  redemptions: [],
+  createdAt: Date.now(),
+  lastActive: Date.now(),
+};
+
+function ensureDefaults(data: Partial<UserProfile>): UserProfile {
+  return {
+    ...DEFAULT_USER,
+    ...data,
+    uid: data.uid || DEFAULT_USER.uid,
+    phoneNumber: data.phoneNumber || '',
+    displayName: data.displayName || DEFAULT_USER.displayName,
+    avatarStyle: data.avatarStyle ?? 0,
+    totalPoints: data.totalPoints ?? 0,
+    visitedSpots: Array.isArray(data.visitedSpots) ? data.visitedSpots : [],
+    currentItinerary: Array.isArray(data.currentItinerary) ? data.currentItinerary : [],
+    completedItineraryStops: Array.isArray(data.completedItineraryStops) ? data.completedItineraryStops : [],
+    completedActivities: Array.isArray(data.completedActivities) ? data.completedActivities : [],
+    redemptions: Array.isArray(data.redemptions) ? data.redemptions : [],
+    createdAt: data.createdAt || Date.now(),
+    lastActive: Date.now(),
+  };
+}
+
+export async function saveUserProgress(user: UserProfile): Promise<void> {
+  try {
+    const data = JSON.stringify({ ...user, lastActive: Date.now() });
+    await AsyncStorage.setItem(KEYS.USER_PROGRESS, data);
+  } catch (error) {
+    console.error('localStorageService: Failed to save user progress:', error);
+  }
+}
+
+export async function loadUserProgress(): Promise<UserProfile | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.USER_PROGRESS);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<UserProfile>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return ensureDefaults(parsed);
+  } catch (error) {
+    console.error('localStorageService: Failed to load user progress:', error);
+    return null;
+  }
+}
+
+export async function clearUserProgress(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(KEYS.USER_PROGRESS);
+  } catch (error) {
+    console.error('localStorageService: Failed to clear user progress:', error);
+  }
+}
+
+export async function saveAppPreferences(prefs: AppPreferences): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.APP_PREFERENCES, JSON.stringify(prefs));
+  } catch (error) {
+    console.error('localStorageService: Failed to save preferences:', error);
+  }
+}
+
+export async function loadAppPreferences(): Promise<AppPreferences | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.APP_PREFERENCES);
+    if (!raw) return null;
+    return JSON.parse(raw) as AppPreferences;
+  } catch (error) {
+    console.error('localStorageService: Failed to load preferences:', error);
+    return null;
+  }
+}
+
+export async function saveVendors(vendors: VendorBusiness[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.VENDORS, JSON.stringify(vendors));
+  } catch (error) {
+    console.error('localStorageService: Failed to save vendors:', error);
+  }
+}
+
+export async function loadVendors(): Promise<VendorBusiness[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.VENDORS);
+    if (!raw) return null;
+    return JSON.parse(raw) as VendorBusiness[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load vendors:', error);
+    return null;
+  }
+}
+
+export async function saveVendorOffers(offers: VendorOffer[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.VENDOR_OFFERS, JSON.stringify(offers));
+  } catch (error) {
+    console.error('localStorageService: Failed to save vendor offers:', error);
+  }
+}
+
+export async function loadVendorOffers(): Promise<VendorOffer[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.VENDOR_OFFERS);
+    if (!raw) return null;
+    return JSON.parse(raw) as VendorOffer[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load vendor offers:', error);
+    return null;
+  }
+}
+
+export async function saveRedemptions(redemptions: VendorOfferRedemption[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.REDEMPTIONS, JSON.stringify(redemptions));
+  } catch (error) {
+    console.error('localStorageService: Failed to save redemptions:', error);
+  }
+}
+
+export async function loadRedemptions(): Promise<VendorOfferRedemption[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.REDEMPTIONS);
+    if (!raw) return null;
+    return JSON.parse(raw) as VendorOfferRedemption[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load redemptions:', error);
+    return null;
+  }
+}
+
+export async function saveCurrentVendor(vendor: VendorBusiness): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.CURRENT_VENDOR, JSON.stringify(vendor));
+  } catch (error) {
+    console.error('localStorageService: Failed to save current vendor:', error);
+  }
+}
+
+export async function loadCurrentVendor(): Promise<VendorBusiness | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.CURRENT_VENDOR);
+    if (!raw) return null;
+    return JSON.parse(raw) as VendorBusiness;
+  } catch (error) {
+    console.error('localStorageService: Failed to load current vendor:', error);
+    return null;
+  }
+}
+
+export async function clearCurrentVendor(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(KEYS.CURRENT_VENDOR);
+  } catch (error) {
+    console.error('localStorageService: Failed to clear current vendor:', error);
+  }
+}
+
+export async function saveReels(reels: Reel[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.REELS, JSON.stringify(reels));
+  } catch (error) {
+    console.error('localStorageService: Failed to save reels:', error);
+  }
+}
+
+export async function loadReels(): Promise<Reel[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.REELS);
+    if (!raw) return null;
+    return JSON.parse(raw) as Reel[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load reels:', error);
+    return null;
+  }
+}
+
+export async function saveHiddenGemSubmissions(submissions: HiddenGemSubmission[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.HIDDEN_GEM_SUBMISSIONS, JSON.stringify(submissions));
+  } catch (error) {
+    console.error('localStorageService: Failed to save hidden gem submissions:', error);
+  }
+}
+
+export async function loadHiddenGemSubmissions(): Promise<HiddenGemSubmission[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.HIDDEN_GEM_SUBMISSIONS);
+    if (!raw) return null;
+    return JSON.parse(raw) as HiddenGemSubmission[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load hidden gem submissions:', error);
+    return null;
+  }
+}
+
+const SPOT_COORDS_KEY = 'PALSAFAR_SPOT_COORDINATES';
+
+export interface SpotCoordinate {
+  id: string;
+  name: string;
+  city: string;
+  state: string;
+  latitude: number;
+  longitude: number;
+  category: string;
+}
+
+export async function saveSpotCoordinates(spots: SpotCoordinate[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(SPOT_COORDS_KEY, JSON.stringify(spots));
+  } catch (error) {
+    console.error('localStorageService: Failed to save spot coordinates:', error);
+  }
+}
+
+export async function loadSpotCoordinates(): Promise<SpotCoordinate[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(SPOT_COORDS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as SpotCoordinate[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load spot coordinates:', error);
+    return null;
+  }
+}
+
+export async function setOnboardingCompleted(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.ONBOARDING_COMPLETED, 'true');
+  } catch (error) {
+    console.error('localStorageService: Failed to save onboarding status:', error);
+  }
+}
+
+export async function resetOnboardingCompleted(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(KEYS.ONBOARDING_COMPLETED);
+  } catch (error) {
+    console.error('localStorageService: Failed to reset onboarding status:', error);
+  }
+}
+
+export async function isOnboardingCompleted(): Promise<boolean> {
+  try {
+    const val = await AsyncStorage.getItem(KEYS.ONBOARDING_COMPLETED);
+    return val === 'true';
+  } catch (error) {
+    console.error('localStorageService: Failed to read onboarding status:', error);
+    return false;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Quest / Treasure Hunt progress persistence
+// ─────────────────────────────────────────────
+
+const QUEST_PROGRESS_PREFIX = 'PALSAFAR_QUEST_PROGRESS_';
+const ACTIVE_QUEST_KEY = 'PALSAFAR_ACTIVE_QUEST_ID';
+const STARTED_QUESTS_KEY = 'PALSAFAR_STARTED_QUESTS';
+
+export async function saveQuestProgress(questId: string, completedCheckpointIds: string[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(`${QUEST_PROGRESS_PREFIX}${questId}`, JSON.stringify(completedCheckpointIds));
+  } catch (error) {
+    console.error('localStorageService: Failed to save quest progress:', error);
+  }
+}
+
+export async function loadQuestProgress(questId: string): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(`${QUEST_PROGRESS_PREFIX}${questId}`);
+    if (!raw) return [];
+    return JSON.parse(raw) as string[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load quest progress:', error);
+    return [];
+  }
+}
+
+export async function markCheckpointCompleted(questId: string, checkpointId: string): Promise<string[]> {
+  const current = await loadQuestProgress(questId);
+  if (!current.includes(checkpointId)) {
+    const updated = [...current, checkpointId];
+    await saveQuestProgress(questId, updated);
+    return updated;
+  }
+  return current;
+}
+
+export async function saveActiveQuestId(questId: string | null): Promise<void> {
+  try {
+    if (questId === null) {
+      await AsyncStorage.removeItem(ACTIVE_QUEST_KEY);
+    } else {
+      await AsyncStorage.setItem(ACTIVE_QUEST_KEY, questId);
+    }
+  } catch (error) {
+    console.error('localStorageService: Failed to save active quest ID:', error);
+  }
+}
+
+export async function loadActiveQuestId(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(ACTIVE_QUEST_KEY);
+  } catch (error) {
+    console.error('localStorageService: Failed to load active quest ID:', error);
+    return null;
+  }
+}
+
+export async function saveStartedQuests(questIds: string[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STARTED_QUESTS_KEY, JSON.stringify(questIds));
+  } catch (error) {
+    console.error('localStorageService: Failed to save started quests:', error);
+  }
+}
+
+export async function loadStartedQuests(): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(STARTED_QUESTS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as string[];
+  } catch (error) {
+    console.error('localStorageService: Failed to load started quests:', error);
+    return [];
+  }
+}

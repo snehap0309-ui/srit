@@ -1,0 +1,85 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Sidebar from "@/components/Sidebar";
+import { NotificationProvider } from "@/components/Notification";
+import ErrorBoundary from "@/components/ErrorBoundary";
+import { getMe } from "@/services/auth";
+import { isAdminUser } from "@/lib/api";
+
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const router = useRouter();
+  const [mounted, setMounted] = useState(false);
+  const [bootError, setBootError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Session is the HttpOnly cookie; getMe goes through /api/proxy.
+        const user = await getMe();
+        if (cancelled) return;
+        if (isAdminUser(user)) {
+          localStorage.setItem("user", JSON.stringify(user));
+          setMounted(true);
+          return;
+        }
+        localStorage.removeItem("user");
+        router.replace("/login");
+      } catch (err: any) {
+        if (cancelled) return;
+        const msg = err?.response?.data?.message || err?.message || "Could not verify admin session.";
+        if (err?.response?.status === 429 || err?.status === 429) {
+          setBootError(msg);
+          return;
+        }
+        localStorage.removeItem("user");
+        router.replace("/login");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  if (bootError) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-3 px-4 text-center">
+        <p className="text-sm font-medium text-red-600">{bootError}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setBootError("");
+            window.location.reload();
+          }}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!mounted) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen bg-[#F8FAFC]">
+      <Sidebar />
+      <main className="flex-1 overflow-auto p-4 lg:p-8 pb-12">
+        <NotificationProvider><ErrorBoundary>{children}</ErrorBoundary></NotificationProvider>
+      </main>
+    </div>
+  );
+}

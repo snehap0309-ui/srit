@@ -1,0 +1,251 @@
+import { Reel } from '../types';
+
+const SAMPLE_VIDEOS = [
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
+  'https://www.w3schools.com/html/mov_bbb.mp4',
+];
+
+const SAMPLE_REELS: Reel[] = [
+  {
+    id: 'reel_1',
+    creatorId: 'creator_rahul',
+    videoUrl: SAMPLE_VIDEOS[0],
+    thumbnail: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=500',
+    title: 'Bhedaghat Marble Rocks',
+    description: 'The marble rocks at sunset are absolutely magical! The white marble glows golden in the evening light. A must-visit spot in Jabalpur! 🌅✨',
+    likes: 234,
+    views: 1520,
+    shares: 42,
+    saves: 15,
+    featured: true,
+    rewardPoints: 50,
+    placeId: 'bhedaghat-marble-rocks',
+    vendorId: null,
+    eventId: null,
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    creator: {
+      id: 'creator_rahul',
+      username: 'Rahul Travels',
+      avatar: null,
+      verified: true,
+      userId: 'user_rahul',
+    },
+    place: {
+      id: 'bhedaghat-marble-rocks',
+      name: 'Bhedaghat Marble Rocks',
+      city: 'Jabalpur',
+      state: 'Madhya Pradesh',
+    },
+    comments: [
+      {
+        id: 'c1',
+        reelId: 'reel_1',
+        userId: 'user2',
+        text: 'Wow! This looks amazing! 😍',
+        createdAt: new Date(Date.now() - 3600000).toISOString(),
+        user: {
+          id: 'user2',
+          name: 'Priya',
+        },
+      },
+      {
+        id: 'c2',
+        reelId: 'reel_1',
+        userId: 'user3',
+        text: 'I visited last week, the boat ride was incredible!',
+        createdAt: new Date(Date.now() - 7200000).toISOString(),
+        user: {
+          id: 'user3',
+          name: 'Amit',
+        },
+      },
+    ],
+  },
+  {
+    id: 'reel_2',
+    creatorId: 'creator_aman',
+    videoUrl: SAMPLE_VIDEOS[1],
+    thumbnail: 'https://images.unsplash.com/photo-1439068796017-5865f0f72b08?w=800',
+    title: 'Dhuandhar Falls',
+    description: "Nature's masterpiece ⛰️ The mighty Dhuandhar Falls never fails to amaze!",
+    likes: 12400,
+    views: 89000,
+    shares: 342,
+    saves: 890,
+    featured: true,
+    rewardPoints: 10,
+    placeId: 'dhuandhar-falls',
+    vendorId: null,
+    eventId: null,
+    createdAt: new Date(Date.now() - 43200000).toISOString(),
+    creator: {
+      id: 'creator_aman',
+      username: 'TravelWithAman',
+      avatar: null,
+      verified: true,
+      userId: 'user_aman',
+    },
+    place: {
+      id: 'dhuandhar-falls',
+      name: 'Bhedaghat',
+      city: 'Jabalpur',
+      state: 'Madhya Pradesh',
+    },
+    comments: [
+      {
+        id: 'c3',
+        reelId: 'reel_2',
+        userId: 'user4',
+        text: 'Stunning view! 🔥',
+        createdAt: new Date(Date.now() - 1800000).toISOString(),
+        user: { id: 'user4', name: 'Kavya' },
+      },
+    ],
+  },
+  {
+    id: 'reel_3',
+    creatorId: 'creator_vikram',
+    videoUrl: SAMPLE_VIDEOS[2],
+    thumbnail: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=500',
+    title: 'Madan Mahal Fort',
+    description: 'Exploring the 11th-century Gond fort! The panoramic views of Jabalpur city from the top are breathtaking. History comes alive here! 🏰📜',
+    likes: 156,
+    views: 750,
+    shares: 10,
+    saves: 8,
+    featured: false,
+    rewardPoints: 10,
+    placeId: 'madan-mahal-fort',
+    vendorId: null,
+    eventId: null,
+    createdAt: new Date(Date.now() - 259200000).toISOString(),
+    creator: {
+      id: 'creator_vikram',
+      username: 'Vikram Explorer',
+      avatar: null,
+      verified: false,
+      userId: 'user_vikram',
+    },
+    place: {
+      id: 'madan-mahal-fort',
+      name: 'Madan Mahal Fort',
+      city: 'Jabalpur',
+      state: 'Madhya Pradesh',
+    },
+    comments: [],
+  },
+  {
+    id: 'reel_4',
+    creatorId: 'creator_ananya',
+    videoUrl: SAMPLE_VIDEOS[3],
+    thumbnail: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=500',
+    title: 'Chausath Yogini Temple',
+    description: 'Hidden gem alert! This ancient temple with 64 yogini sculptures offers stunning 360-degree views of the Narmada River. The climb is worth it! 🛕🌄',
+    likes: 312,
+    views: 2100,
+    shares: 60,
+    saves: 30,
+    featured: true,
+    rewardPoints: 50,
+    placeId: 'chausath-yogini-temple',
+    vendorId: null,
+    eventId: null,
+    createdAt: new Date(Date.now() - 345600000).toISOString(),
+    creator: {
+      id: 'creator_ananya',
+      username: 'Ananya Diaries',
+      avatar: null,
+      verified: false,
+      userId: 'user_ananya',
+    },
+    place: {
+      id: 'chausath-yogini-temple',
+      name: 'Chausath Yogini Temple',
+      city: 'Jabalpur',
+      state: 'Madhya Pradesh',
+    },
+    comments: [
+      {
+        id: 'c4',
+        reelId: 'reel_4',
+        userId: 'user5',
+        text: 'Never knew this place existed! Adding to my list 📝',
+        createdAt: new Date(Date.now() - 900000).toISOString(),
+        user: {
+          id: 'user5',
+          name: 'Deepak',
+        },
+      },
+    ],
+  },
+  {
+    id: 'reel_5',
+    creatorId: 'creator_rohan',
+    videoUrl: SAMPLE_VIDEOS[4],
+    thumbnail: 'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=500',
+    title: 'Narmada Queen Boat Ride',
+    description: 'Boating through the marble gorge was a dream come true! The towering cliffs and calm waters create a magical atmosphere. 🚤🌊',
+    likes: 278,
+    views: 1850,
+    shares: 48,
+    saves: 22,
+    featured: false,
+    rewardPoints: 10,
+    placeId: 'narmada-queen-boat-ride',
+    vendorId: null,
+    eventId: null,
+    createdAt: new Date(Date.now() - 432000000).toISOString(),
+    creator: {
+      id: 'creator_rohan',
+      username: 'Rohan Roams',
+      avatar: null,
+      verified: false,
+      userId: 'user_rohan',
+    },
+    place: {
+      id: 'narmada-queen-boat-ride',
+      name: 'Narmada Queen Boat Ride',
+      city: 'Jabalpur',
+      state: 'Madhya Pradesh',
+    },
+    comments: [
+      {
+        id: 'c5',
+        reelId: 'reel_5',
+        userId: 'user6',
+        text: 'How much does the boat ride cost?',
+        createdAt: new Date(Date.now() - 600000).toISOString(),
+        user: {
+          id: 'user6',
+          name: 'Meera',
+        },
+      },
+      {
+        id: 'c6',
+        reelId: 'reel_5',
+        userId: 'creator_rohan',
+        text: '@Meera Around ₹400 per person for the full gorge ride!',
+        createdAt: new Date(Date.now() - 300000).toISOString(),
+        user: {
+          id: 'creator_rohan',
+          name: 'Rohan Roams',
+        },
+      },
+    ],
+  },
+];
+
+export function getSampleReels(): Reel[] {
+  return SAMPLE_REELS.map(r => ({ ...r }));
+}
+
+export function getReelById(id: string): Reel | undefined {
+  return SAMPLE_REELS.find(r => r.id === id);
+}
+
+export function getReelsBySpotId(spotId: string): Reel[] {
+  return SAMPLE_REELS.filter(r => r.placeId === spotId).map(r => ({ ...r }));
+}

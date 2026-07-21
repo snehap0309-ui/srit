@@ -1,0 +1,1765 @@
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  Alert,
+  
+  Modal,
+  TextInput,
+  Dimensions,
+  ActivityIndicator,
+  Share,
+  RefreshControl,
+  Animated } from 'react-native';
+import FastImage from 'react-native-fast-image';
+import Pal from '../design/DesignSystem';
+import { spacing, borderRadius } from '../config/theme';
+import { useTheme } from '../context/ThemeContext';
+import { TouristSpot, UserProfile } from '../types';
+import { useLocationContext } from '../context/LocationContext';
+import { useDataContext } from '../context/DataContext';
+import { useUserContext } from '../context/UserContext';
+import { DEV_FLAGS } from '../config/devFlags';
+import { haversineDistance, formatDistance } from '../utils/location';
+import Icon from 'react-native-vector-icons/Ionicons';
+import { placesApi } from '../services/api/places';
+import { tripsApi } from '../services/api/trips';
+import { getPlaces } from '../services/placesService';
+import { cacheItineraryPlace } from '../utils/itineraryPlacesCache';
+import { quickAddPlaceToTrip } from '../utils/quickAddPlace';
+import RideOptionsSheet from '../components/RideOptionsSheet';
+import { useNavigation } from '@react-navigation/native';
+import { useToast } from '../context/ToastContext';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+interface SpotDetailProps {
+  spot: TouristSpot;
+  user: UserProfile;
+  onBack: () => void;
+}
+
+interface ReviewItem {
+  id: string;
+  rating: number;
+  content: string;
+  createdAt: string;
+  user?: {
+    name?: string;
+    displayName?: string;
+    avatarStyle?: number;
+  };
+  helpfulVotes?: number;
+  photos?: string[];
+}
+
+const PRESET_AVATARS = ['👦', '👧', '👨', '👩', '👶', '👸', '🤴', '🧑', '🧒', '👱'];
+
+export default function SpotDetailScreen({
+  spot,
+  user,
+  onBack,
+}: SpotDetailProps) {
+  const navigation = useNavigation<any>();
+  const { theme } = useTheme();
+  const colors = theme;
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const isVisited = user?.visitedSpots?.includes(spot.id);
+
+  const { effectivePosition } = useLocationContext();
+  const { handleCompleteStop, handleCompleteActivity } = useDataContext();
+  const { user: ctxUser, setUser, isGuest } = useUserContext();
+  const { showSuccess } = useToast();
+  const isInItinerary = ctxUser.currentItinerary?.includes(spot.id);
+  const [addingToItinerary, setAddingToItinerary] = useState(false);
+
+  // Carousel images
+  const carouselImages = useMemo(() => {
+    const list: string[] = [];
+    if (spot.imageUrl) list.push(spot.imageUrl);
+    if (spot.imageUri) list.push(spot.imageUri);
+    // Beautiful fallback images of India landmarks
+    list.push('https://images.unsplash.com/photo-1524492412937-b28074a5d7da?auto=format&fit=crop&w=600&q=80'); // Taj Mahal
+    list.push('https://images.unsplash.com/photo-1477584308802-e9c37c3a15df?auto=format&fit=crop&w=600&q=80'); // Hawa Mahal
+    list.push('https://images.unsplash.com/photo-1593693397690-362cb9666fc2?auto=format&fit=crop&w=600&q=80'); // Kerala
+    return list;
+  }, [spot]);
+
+  // Reviews state
+  const [reviews, setReviews] = useState<ReviewItem[]>([]);
+  const [loadingReviews, setLoadingReviews] = useState(false);
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [ratingInput, setRatingInput] = useState(5);
+  const [commentInput, setCommentInput] = useState('');
+  const [reviewModalVisible, setReviewModalVisible] = useState(false);
+
+  const [isSaved, setIsSaved] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Full Spot data & advanced info
+  const [fullSpot, setFullSpot] = useState<any>(null);
+  const [nearbyVendors, setNearbyVendors] = useState<any[]>([]);
+  const [spotReels, setSpotReels] = useState<any[]>([]);
+  const [loadingExtras, setLoadingExtras] = useState(false);
+
+  useEffect(() => {
+    setLoadingExtras(true);
+    Promise.all([
+      placesApi.getById(spot.id).catch(() => null),
+      placesApi.getNearbyVendors(spot.id, 5000).catch(() => []),
+      // If reels API exists, fetch it. Assuming it's in placesApi or we use mock data for now
+    ]).then(([fullData, vendors]) => {
+      if (fullData) setFullSpot(fullData);
+      if (vendors) setNearbyVendors(vendors);
+    }).finally(() => setLoadingExtras(false));
+  }, [spot.id]);
+
+  const displaySpot = { ...spot, ...fullSpot };
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    Promise.all([
+      placesApi.getById(spot.id).then((fullData) => { if (fullData) setFullSpot(fullData); }).catch(() => {}),
+      placesApi.getNearbyVendors(spot.id, 5000).then((vendors) => { if (vendors) setNearbyVendors(vendors); }).catch(() => {}),
+      placesApi.getReviews(spot.id).then((loaded) => setReviews(Array.isArray(loaded) ? loaded : [])).catch(() => setReviews([])),
+    ]).finally(() => setRefreshing(false));
+  }, [spot.id]);
+
+  const handleShare = useCallback(async () => {
+    try {
+      await Share.share({
+        message: `Check out ${spot.name} in ${spot.city}, ${spot.state} — discovered on PalSafar! 🗺️`,
+      });
+    } catch (e) { console.warn('Caught empty exception', e); }
+  }, [spot]);
+
+  const handleSave = useCallback(async () => {
+    const nowSaved = !isSaved;
+    setIsSaved(nowSaved);
+    Alert.alert(nowSaved ? 'Saved!' : 'Removed', nowSaved
+      ? `${spot.name} added to your saved places`
+      : `${spot.name} removed from your saved places`);
+    try {
+      if (nowSaved) {
+        await placesApi.save(spot.id);
+      } else {
+        await placesApi.unsave(spot.id);
+      }
+    } catch (err) {
+      setIsSaved(!nowSaved);
+      console.warn('[SpotDetail] Save/unsave failed:', err);
+    }
+  }, [spot, isSaved]);
+
+  const handleToggleItinerary = useCallback(async () => {
+    const alreadyInItinerary = ctxUser?.currentItinerary?.includes(spot.id);
+    if (alreadyInItinerary) {
+      Alert.alert(
+        'Already in Itinerary',
+        `${spot.name} is already in your itinerary. Manage or remove it from "My Itinerary".`
+      );
+      return;
+    }
+
+    if (isGuest) {
+      Alert.alert('Sign In Required', 'Create an account or sign in to save places to your itinerary.');
+      return;
+    }
+
+    if (addingToItinerary) return;
+    setAddingToItinerary(true);
+    setUser(prev => {
+      const exists = prev.currentItinerary?.includes(spot.id);
+      return {
+        ...prev,
+        currentItinerary: exists ? prev.currentItinerary : [...(prev.currentItinerary || []), spot.id],
+      };
+    });
+    cacheItineraryPlace(spot);
+    showSuccess('Added to your itinerary');
+    try {
+      await quickAddPlaceToTrip(spot.id, { name: spot.name, city: spot.city });
+    } catch (err: any) {
+      setUser(prev => ({
+        ...prev,
+        currentItinerary: (prev.currentItinerary || []).filter(id => id !== spot.id),
+      }));
+      if (err?.status === 401) {
+        Alert.alert('Sign In Required', 'Create an account or sign in to save places to your itinerary.');
+      } else {
+        Alert.alert('Could Not Add', err?.message || 'Could not add this place to your itinerary right now.');
+      }
+    } finally {
+      setAddingToItinerary(false);
+    }
+  }, [spot, ctxUser?.currentItinerary, setUser, isGuest, addingToItinerary, showSuccess]);
+
+  // Trivia Quiz state
+  const [quizVisible, setQuizVisible] = useState(false);
+  const [quizQuestions, setQuizQuestions] = useState<any[]>([]);
+  const [quizCurrentIdx, setQuizCurrentIdx] = useState(0);
+  const [quizSelectedOption, setQuizSelectedOption] = useState<number | null>(null);
+  const [quizAnswered, setQuizAnswered] = useState(false);
+  const [quizCorrectCount, setQuizCorrectCount] = useState(0);
+
+  // Sliding Puzzle state
+  const [puzzleVisible, setPuzzleVisible] = useState(false);
+  const [puzzleBoard, setPuzzleBoard] = useState<number[]>([]);
+  const [puzzleMoves, setPuzzleMoves] = useState(0);
+  const [puzzleSolved, setPuzzleSolved] = useState(false);
+
+  // Ride options state
+  const [rideSheetVisible, setRideSheetVisible] = useState(false);
+
+  const scrollY = useRef(new Animated.Value(0)).current;
+
+  const [cityPlaces, setCityPlaces] = useState<TouristSpot[]>([]);
+
+  useEffect(() => {
+    getPlaces().then(data => {
+      const filtered = data.filter(s => s.city?.toLowerCase() === spot.city?.toLowerCase());
+      setCityPlaces(filtered);
+    });
+  }, [spot.city]);
+
+  const cityCompletionStats = useMemo(() => {
+    if (!cityPlaces.length) return null;
+    const total = cityPlaces.length;
+    const visited = cityPlaces.filter(s => user?.visitedSpots?.includes(s.id)).length;
+    const percent = Math.round((visited / total) * 100);
+    return { name: spot.city, visited, total, percent };
+  }, [cityPlaces, user?.visitedSpots, spot.city]);
+
+  // Load reviews on mount
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingReviews(true);
+    placesApi.getReviews(spot.id)
+      .then(loaded => {
+        if (!cancelled) setReviews(Array.isArray(loaded) ? loaded : []);
+      })
+      .catch(() => {
+        if (!cancelled) setReviews([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingReviews(false);
+      });
+    return () => { cancelled = true; };
+  }, [spot.id]);
+
+  const openReviewModal = useCallback(() => {
+    if (isGuest) {
+      Alert.alert('Sign In Required', 'Create an account or sign in to write a review.');
+      return;
+    }
+    const myReview = reviews.find(r =>
+      (r.user as any)?.id === ctxUser?.uid ||
+      r.user?.name === (user?.displayName || ctxUser?.displayName)
+    );
+    if (myReview) {
+      setRatingInput(myReview.rating || 5);
+      setCommentInput(myReview.content || '');
+    } else {
+      setRatingInput(5);
+      setCommentInput('');
+    }
+    setReviewModalVisible(true);
+  }, [isGuest, reviews, ctxUser?.uid, ctxUser?.displayName, user?.displayName]);
+
+  const distance = useMemo(() => {
+    if (!effectivePosition) return null;
+    return haversineDistance(
+      effectivePosition.latitude,
+      effectivePosition.longitude,
+      spot.latitude,
+      spot.longitude
+    );
+  }, [effectivePosition, spot]);
+
+  const canCheckIn = useMemo(() => {
+    if (__DEV__ || DEV_FLAGS.SHOW_DEV_GPS_PANEL) return true;
+    if (distance === null) return false;
+    return distance <= 100;
+  }, [distance]);
+
+  const handleCheckInPress = async () => {
+    try {
+      handleCompleteStop(spot.id, spot.points || 50);
+      // Call checkIn API (awards PalPoints server-side via walletService.earn)
+      placesApi.checkIn(spot.id).catch((err) => {
+        console.warn('[SpotDetail] checkIn API failed:', err);
+      });
+      // Also record the stat for analytics
+      placesApi.recordStat(spot.id, 'checkin').catch(() => {});
+    } catch {
+      Alert.alert('Check-In Error', 'Could not complete check-in. Please try again.');
+    }
+  };
+
+  const handleAddReview = async () => {
+    if (isGuest) {
+      Alert.alert('Sign In Required', 'Create an account or sign in to write a review.');
+      return;
+    }
+    if (!commentInput.trim()) {
+      Alert.alert('Required', 'Please enter a review comment.');
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const newReview = await placesApi.addReview(spot.id, ratingInput, commentInput.trim());
+      const normalized = {
+        id: newReview?.id || String(Date.now()),
+        rating: newReview?.rating ?? ratingInput,
+        content: newReview?.content ?? commentInput.trim(),
+        createdAt: newReview?.createdAt || new Date().toISOString(),
+        photos: newReview?.photos || [],
+        helpfulVotes: newReview?.helpfulVotes || 0,
+        user: newReview?.user || {
+          name: user?.displayName || ctxUser?.displayName || 'You',
+          avatarStyle: user?.avatarStyle ?? ctxUser?.avatarStyle ?? 0,
+        },
+      };
+      setReviews(prev => {
+        const withoutMine = prev.filter(r => r.id !== normalized.id);
+        return [normalized, ...withoutMine];
+      });
+      setFullSpot((prev: any) => {
+        if (!prev) return prev;
+        const merged = [normalized, ...reviews.filter(r => r.id !== normalized.id)];
+        const avg = merged.reduce((s, r) => s + r.rating, 0) / merged.length;
+        return {
+          ...prev,
+          rating: Number(avg.toFixed(1)),
+          reviewCount: merged.length,
+        };
+      });
+      Alert.alert('Success', 'Thank you for your review!');
+      setCommentInput('');
+      setReviewModalVisible(false);
+      // Refresh from server so list matches DB (upsert / user include)
+      placesApi.getReviews(spot.id)
+        .then(loaded => setReviews(Array.isArray(loaded) ? loaded : []))
+        .catch(() => {});
+    } catch (err: any) {
+      if (err?.status === 401) {
+        Alert.alert('Sign In Required', 'Create an account or sign in to write a review.');
+      } else {
+        Alert.alert('Error', err?.message || 'Could not submit review. Please try again.');
+      }
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  // ── Quiz Logic ──
+  const startQuiz = () => {
+    // Generate trivia questions dynamically
+    const questions = [
+      {
+        question: `Where is the attraction "${spot.name}" located?`,
+        options: [
+          `${spot.city}, ${spot.state}`,
+          `New Delhi, Delhi`,
+          `Mumbai, Maharashtra`,
+          `Jaipur, Rajasthan`
+        ].filter((v, i, a) => a.indexOf(v) === i),
+        correctIndex: 0,
+        explanation: `"${spot.name}" is situated in ${spot.city}, ${spot.state}.`
+      },
+      {
+        question: `What category of attraction is "${spot.name}"?`,
+        options: [
+          spot.category.charAt(0).toUpperCase() + spot.category.slice(1),
+          'Adventure Hub',
+          'Urban Shopping Mall',
+          'Theme Park Resort'
+        ].filter((v, i, a) => a.indexOf(v) === i),
+        correctIndex: 0,
+        explanation: `"${spot.name}" is officially classified under the ${spot.category} category.`
+      },
+      {
+        question: `What is the visitor difficulty level designated for "${spot.name}"?`,
+        options: [
+          spot.difficulty.toUpperCase(),
+          spot.difficulty === 'easy' ? 'HARD' : 'EASY',
+          'EXTREME'
+        ],
+        correctIndex: 0,
+        explanation: `Exploring "${spot.name}" is rated as ${spot.difficulty} difficulty for visitors.`
+      }
+    ];
+
+    setQuizQuestions(questions);
+    setQuizCurrentIdx(0);
+    setQuizSelectedOption(null);
+    setQuizAnswered(false);
+    setQuizCorrectCount(0);
+    setQuizVisible(true);
+  };
+
+  const handleSelectQuizOption = (optIdx: number) => {
+    if (quizAnswered) return;
+    setQuizSelectedOption(optIdx);
+    setQuizAnswered(true);
+    const correct = optIdx === quizQuestions[quizCurrentIdx].correctIndex;
+    if (correct) {
+      setQuizCorrectCount(c => c + 1);
+    }
+  };
+
+  const handleNextQuiz = () => {
+    if (quizCurrentIdx < quizQuestions.length - 1) {
+      setQuizCurrentIdx(c => c + 1);
+      setQuizSelectedOption(null);
+      setQuizAnswered(false);
+    } else {
+      // Completed!
+      setQuizVisible(false);
+      const pointsEarned = quizCorrectCount === quizQuestions.length ? 25 : 5;
+      handleCompleteActivity(`quiz_${spot.id}`, pointsEarned);
+      placesApi.recordStat(spot.id, 'quest_complete').catch(console.warn);
+      Alert.alert(
+        'Quiz Finished!',
+        `You answered ${quizCorrectCount}/${quizQuestions.length} correct. Earned +${pointsEarned} Points!`
+      );
+    }
+  };
+
+  // ── Sliding Puzzle Logic ──
+  const startPuzzle = () => {
+    // Generate a solvable puzzle board by making random valid moves from solved state
+    const board = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    let emptyIdx = 8;
+    const getValidMoves = (idx: number) => {
+      const moves = [];
+      const row = Math.floor(idx / 3);
+      const col = idx % 3;
+      if (row > 0) moves.push(idx - 3);
+      if (row < 2) moves.push(idx + 3);
+      if (col > 0) moves.push(idx - 1);
+      if (col < 2) moves.push(idx + 1);
+      return moves;
+    };
+    for (let i = 0; i < 40; i++) {
+      const moves = getValidMoves(emptyIdx);
+      const randomMove = moves[Math.floor(Math.random() * moves.length)];
+      board[emptyIdx] = board[randomMove];
+      board[randomMove] = 8;
+      emptyIdx = randomMove;
+    }
+
+    setPuzzleBoard(board);
+    setPuzzleMoves(0);
+    setPuzzleSolved(false);
+    setPuzzleVisible(true);
+  };
+
+  const handleTilePress = (tileIndex: number) => {
+    if (puzzleSolved) return;
+    const emptyIndex = puzzleBoard.indexOf(8);
+    const row = Math.floor(tileIndex / 3);
+    const col = tileIndex % 3;
+    const emptyRow = Math.floor(emptyIndex / 3);
+    const emptyCol = emptyIndex % 3;
+
+    const isAdjacent = (Math.abs(row - emptyRow) + Math.abs(col - emptyCol)) === 1;
+    if (isAdjacent) {
+      const newBoard = [...puzzleBoard];
+      newBoard[emptyIndex] = puzzleBoard[tileIndex];
+      newBoard[tileIndex] = 8;
+      setPuzzleBoard(newBoard);
+      setPuzzleMoves(m => m + 1);
+
+      // Check solved
+      const isSolved = newBoard.every((val, idx) => val === idx);
+      if (isSolved) {
+        setPuzzleSolved(true);
+        handleCompleteActivity(`puzzle_${spot.id}`, 50);
+        placesApi.recordStat(spot.id, 'quest_complete').catch(console.warn);
+      }
+    }
+  };
+
+  const categoryIcons: Record<string, string> = {
+    monument: '🏛️',
+    temple: '🛕',
+    mosque: '🕌',
+    church: '⛪',
+    fort: '🏰',
+    palace: '👑',
+    nature: '🌿',
+    museum: '🏛️',
+    beach: '🏖️',
+    lake: '🏞️',
+    ghat: '🪜',
+    heritage: '🏛️',
+    park: '🏞️',
+    garden: '🏡',
+    hill_station: '⛰️',
+    wildlife: '🦁',
+    waterfall: '🌊',
+    camping: '⛺',
+    cafe: '☕',
+    cafes: '☕',
+  };
+
+  const avgRating = useMemo(() => {
+    if (reviews.length > 0) {
+      return (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1);
+    }
+    const placeRating = displaySpot?.rating ?? fullSpot?.rating ?? spot.rating;
+    if (placeRating != null && Number(placeRating) > 0) return Number(placeRating).toFixed(1);
+    return '—';
+  }, [reviews, displaySpot?.rating, fullSpot?.rating, spot.rating]);
+
+  return (
+    <View style={styles.container}>
+      {/* Custom Glassmorphism Header */}
+      <Animated.View style={[styles.header, {
+        backgroundColor: scrollY.interpolate({
+          inputRange: [0, 200],
+          outputRange: ['rgba(0,0,0,0)', 'rgba(21, 25, 37, 0.9)']
+        })
+      }]}>
+        <TouchableOpacity style={styles.backButton} onPress={onBack}>
+          <View style={styles.glassButton}>
+            <Icon name="arrow-back" size={24} color={'#FFF'} />
+          </View>
+        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={handleSave} style={styles.headerActionBtn}>
+            <View style={styles.glassButton}>
+              <Icon name={isSaved ? 'bookmark' : 'bookmark-outline'} size={22} color={isSaved ? '#D4C4A8' : '#FFF'} />
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleShare} style={styles.headerActionBtn}>
+            <View style={styles.glassButton}>
+              <Icon name="share-outline" size={22} color={'#FFF'} />
+            </View>
+          </TouchableOpacity>
+          <Text style={styles.categoryIcon}>
+            {categoryIcons[spot.category?.toLowerCase()] ?? '📍'}
+          </Text>
+        </View>
+      </Animated.View>
+
+      <Animated.ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+      >
+        {/* Horizontal Carousel Section (Parallax) */}
+        <Animated.View style={[styles.carouselContainer, {
+          transform: [
+            { translateY: scrollY.interpolate({ inputRange: [-100, 0, 200], outputRange: [-50, 0, 100], extrapolate: 'clamp' }) },
+            { scale: scrollY.interpolate({ inputRange: [-100, 0], outputRange: [1.2, 1], extrapolate: 'clamp' }) }
+          ]
+        }]}>
+          <ScrollView
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            style={styles.carousel}
+          >
+            {carouselImages.map((uri, index) => (
+              <FastImage
+                key={index}
+                source={{ uri }}
+                style={styles.carouselImage}
+                resizeMode="cover"
+              />
+            ))}
+          </ScrollView>
+          <View style={styles.carouselOverlay}>
+            <Text style={styles.badgeIcon}>{spot.badgeIcon || '📍'}</Text>
+          </View>
+        </Animated.View>
+
+        {/* Spot Details Header */}
+        <View style={styles.spotMeta}>
+          <Text style={styles.name}>{spot.name}</Text>
+          <Text style={styles.location}>
+            📍 {spot.city}, {spot.state}
+          </Text>
+
+          {/* Rating Summary */}
+          <View style={styles.ratingRow}>
+            <View style={styles.stars}>
+              {[1, 2, 3, 4, 5].map(s => (
+                <Icon
+                  key={s}
+                  name="star"
+                  size={16}
+                  color={s <= Math.round(Number(avgRating)) ? '#FFB300' : '#E0E0E0'}
+                />
+              ))}
+            </View>
+            <Text style={[styles.ratingText, { color: colors.textSecondary }]}>
+              {avgRating} ({reviews.length || displaySpot?.reviewCount || fullSpot?.reviewCount || 0} reviews)
+            </Text>
+          </View>
+        </View>
+
+        {/* Unified Quick Action Strip */}
+        <View style={styles.actionStripContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionStrip}>
+            <TouchableOpacity style={styles.actionStripBtn} onPress={() => setRideSheetVisible(true)}>
+              <View style={[styles.actionIconBg, { backgroundColor: colors.primary + '20' }]}>
+                <Icon name="car" size={22} color={colors.primary} />
+              </View>
+              <Text style={styles.actionStripText}>Ride</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionStripBtn} onPress={handleToggleItinerary} disabled={addingToItinerary}>
+              <View style={[styles.actionIconBg, { backgroundColor: isInItinerary ? colors.primary : colors.surface }]}>
+                {addingToItinerary ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Icon name={isInItinerary ? "checkmark-done" : "map"} size={22} color={isInItinerary ? '#fff' : colors.primary} />
+                )}
+              </View>
+              <Text style={styles.actionStripText}>{isInItinerary ? 'Added' : 'Itinerary'}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionStripBtn} onPress={handleSave}>
+              <View style={[styles.actionIconBg, { backgroundColor: isSaved ? '#FFC10720' : colors.surface }]}>
+                <Icon name={isSaved ? "bookmark" : "bookmark-outline"} size={22} color={isSaved ? '#FFC107' : colors.text} />
+              </View>
+              <Text style={styles.actionStripText}>{isSaved ? 'Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionStripBtn} onPress={handleShare}>
+              <View style={[styles.actionIconBg, { backgroundColor: colors.surface }]}>
+                <Icon name="share-social-outline" size={22} color={colors.text} />
+              </View>
+              <Text style={styles.actionStripText}>Share</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+
+        {/* Info & Amenities Grid */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Essential Info</Text>
+          <View style={styles.infoGrid}>
+            <View style={styles.infoGridItem}>
+              <Icon name="time-outline" size={20} color={colors.primary} />
+              <View style={styles.infoGridTextCol}>
+                <Text style={styles.infoGridLabel}>Timings</Text>
+                <Text style={styles.infoGridValue}>{(displaySpot.openingHours && typeof displaySpot.openingHours === 'string') ? displaySpot.openingHours : 'Check local listing'}</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoGridItem}>
+              <Icon name="wallet-outline" size={20} color="#FFC107" />
+              <View style={styles.infoGridTextCol}>
+                <Text style={styles.infoGridLabel}>Entry Fee</Text>
+                <Text style={styles.infoGridValue}>{displaySpot.entryFee ? `₹${displaySpot.entryFee}` : displaySpot.fee ?? 'Free'}</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoGridItem}>
+              <Icon name="hourglass-outline" size={20} color={colors.secondary} />
+              <View style={styles.infoGridTextCol}>
+                <Text style={styles.infoGridLabel}>Duration</Text>
+                <Text style={styles.infoGridValue}>{displaySpot.recommendedDuration || `${displaySpot.estimatedDuration || 60} mins`}</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoGridItem}>
+              <Icon name="fitness-outline" size={20} color={displaySpot.difficulty === 'easy' ? '#4CAF50' : displaySpot.difficulty === 'medium' ? '#FF9800' : '#F44336'} />
+              <View style={styles.infoGridTextCol}>
+                <Text style={styles.infoGridLabel}>Difficulty</Text>
+                <Text style={styles.infoGridValue}>{displaySpot.difficulty?.toUpperCase()}</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Amenities Row */}
+          <View style={styles.amenitiesRow}>
+            <View style={[styles.amenityBadge, { opacity: displaySpot.hasParking ? 1 : 0.4 }]}>
+              <Icon name="car-sport-outline" size={16} color={colors.text} />
+              <Text style={styles.amenityText}>Parking</Text>
+            </View>
+            <View style={[styles.amenityBadge, { opacity: displaySpot.isAccessible ? 1 : 0.4 }]}>
+              <Icon name="body-outline" size={16} color={colors.text} />
+              <Text style={styles.amenityText}>Accessible</Text>
+            </View>
+            <View style={[styles.amenityBadge, { opacity: displaySpot.hasWashroom ? 1 : 0.4 }]}>
+              <Icon name="water-outline" size={16} color={colors.text} />
+              <Text style={styles.amenityText}>Washroom</Text>
+            </View>
+            <View style={[styles.amenityBadge, { opacity: displaySpot.isPetFriendly ? 1 : 0.4 }]}>
+              <Icon name="paw-outline" size={16} color={colors.text} />
+              <Text style={styles.amenityText}>Pets</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Check-In / Visited Action Button */}
+        {isVisited ? (
+          <View style={styles.actionSection}>
+            <View style={styles.visitedBadge}>
+              <Text style={styles.visitedText}>✅ Destination Checked-In</Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.actionSection}>
+            <Text style={styles.actionTitle}>Visit this spot!</Text>
+            <Text style={styles.actionSubtitle}>
+              {distance !== null
+                ? `You are ${formatDistance(distance)} away`
+                : `Go within 100m of this spot to check in`}
+            </Text>
+            {canCheckIn ? (
+              <TouchableOpacity style={styles.checkInButton} onPress={handleCheckInPress}>
+                <Icon name="checkmark-circle-outline" size={20} color="#fff" style={{ marginRight: 6 }} />
+                <Text style={styles.checkInButtonText}>📍 Check In & Claim points</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={[styles.checkInButton, styles.checkInButtonDisabled]} disabled>
+                <Icon name="lock-closed-outline" size={16} color={colors.textMuted} style={{ marginRight: 6 }} />
+                <Text style={styles.checkInButtonTextDisabled}>Too Far (Get Closer to Check In)</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* Nearby Vendors Section */}
+        {nearbyVendors.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>Nearby Vendors & Food</Text>
+              <TouchableOpacity><Text style={[styles.seeAllText, { color: colors.primary }]}>See All</Text></TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.vendorsList}>
+              {nearbyVendors.map((vendor, idx) => (
+                <TouchableOpacity key={idx} style={[styles.vendorCard, { backgroundColor: colors.surface }]}>
+                  <FastImage source={{ uri: vendor.imageUrl || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=300&q=80' }} style={styles.vendorImg} />
+                  <View style={styles.vendorInfo}>
+                    <Text style={styles.vendorName} numberOfLines={1}>{vendor.businessName}</Text>
+                    <Text style={styles.vendorType}>{vendor.businessType}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Reels Section */}
+        {spotReels.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>Discover Reels</Text>
+              <TouchableOpacity><Text style={[styles.seeAllText, { color: colors.primary }]}>See All</Text></TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reelsList}>
+              {spotReels.map((reel, idx) => (
+                <TouchableOpacity key={idx} style={styles.reelThumbCard}>
+                  <FastImage source={{ uri: reel.thumbnailUrl }} style={styles.reelThumbImg} />
+                  <View style={styles.reelOverlay}>
+                    <Icon name="play-circle" size={32} color="#fff" />
+                    <Text style={styles.reelViews}>{reel.views} views</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Reviews List Section */}
+        <View style={styles.section}>
+          <View style={styles.reviewsHeader}>
+            <Text style={styles.sectionTitle}>User Reviews</Text>
+            <TouchableOpacity
+              style={[styles.addReviewLink, { borderColor: colors.primary }]}
+              onPress={openReviewModal}
+            >
+              <Text style={[styles.addReviewLinkText, { color: colors.primary }]}>Write a Review</Text>
+            </TouchableOpacity>
+          </View>
+
+          {loadingReviews ? (
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 20 }} />
+          ) : reviews.length === 0 ? (
+            <Text style={[styles.noReviews, { color: colors.textMuted }]}>No reviews yet. Be the first to share your thoughts!</Text>
+          ) : (
+            reviews.map(item => (
+              <View key={item.id} style={styles.reviewCard}>
+                <View style={styles.reviewUserRow}>
+                  <Text style={styles.userAvatar}>
+                    {PRESET_AVATARS[item.user?.avatarStyle ?? 0] || '🧭'}
+                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.reviewUser, { color: colors.text }]}>
+                      {item.user?.displayName || item.user?.name || 'Explorer'}
+                    </Text>
+                    <View style={styles.stars}>
+                      {[1, 2, 3, 4, 5].map(s => (
+                        <Icon
+                          key={s}
+                          name="star"
+                          size={12}
+                          color={s <= item.rating ? '#FFB300' : '#E0E0E0'}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                  <Text style={[styles.reviewDate, { color: colors.textMuted }]}>
+                    {new Date(item.createdAt).toLocaleDateString()}
+                  </Text>
+                </View>
+                <Text style={[styles.reviewContent, { color: colors.textSecondary }]}>
+                  {item.content}
+                </Text>
+                
+                {/* Review Photos */}
+                {item.photos && item.photos.length > 0 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewPhotosRow}>
+                    {item.photos.map((photo, pIdx) => (
+                      <FastImage key={pIdx} source={{ uri: photo }} style={styles.reviewPhoto} />
+                    ))}
+                  </ScrollView>
+                )}
+
+                {/* Helpful Votes */}
+                <View style={styles.reviewActions}>
+                  <TouchableOpacity style={styles.helpfulBtn} onPress={() => {
+                    placesApi.markReviewHelpful(spot.id, item.id).catch(() => {});
+                    const newReviews = [...reviews];
+                    const target = newReviews.find(r => r.id === item.id);
+                    if (target) { target.helpfulVotes = (target.helpfulVotes || 0) + 1; }
+                    setReviews(newReviews);
+                  }}>
+                    <Icon name="thumbs-up-outline" size={14} color={colors.primary} />
+                    <Text style={[styles.helpfulText, { color: colors.primary }]}>
+                      Helpful ({item.helpfulVotes || 0})
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+      </Animated.ScrollView>
+
+      {/* ── Review Submission Modal ── */}
+      <Modal
+        visible={reviewModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setReviewModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.background }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>Write a Review</Text>
+              <TouchableOpacity onPress={() => setReviewModalVisible(false)}>
+                <Icon name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Select Rating</Text>
+            <View style={styles.starsInput}>
+              {[1, 2, 3, 4, 5].map(val => (
+                <TouchableOpacity key={val} onPress={() => setRatingInput(val)}>
+                  <Icon
+                    name={val <= ratingInput ? 'star' : 'star-outline'}
+                    size={36}
+                    color={val <= ratingInput ? '#FFB300' : colors.textMuted}
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[styles.inputLabel, { color: colors.textSecondary, marginTop: 16 }]}>Your Comments</Text>
+            <TextInput
+              style={[styles.reviewInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+              placeholder="Tell other travelers about your experience..."
+              placeholderTextColor={colors.textMuted}
+              multiline
+              numberOfLines={4}
+              value={commentInput}
+              onChangeText={setCommentInput}
+            />
+
+            <TouchableOpacity
+              style={[styles.submitButton, { backgroundColor: colors.primary }]}
+              onPress={handleAddReview}
+              disabled={submittingReview}
+            >
+              {submittingReview ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.submitButtonText}>Submit Review</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Quiz Modal ── */}
+      <Modal
+        visible={quizVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setQuizVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          {quizQuestions.length > 0 && (
+            <View style={[styles.modalCard, { backgroundColor: colors.background }]}>
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>
+                  Question {quizCurrentIdx + 1} of {quizQuestions.length}
+                </Text>
+                <TouchableOpacity onPress={() => setQuizVisible(false)}>
+                  <Icon name="close" size={24} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={[styles.quizQuestionText, { color: colors.text }]}>
+                {quizQuestions[quizCurrentIdx].question}
+              </Text>
+
+              <View style={styles.quizOptions}>
+                {quizQuestions[quizCurrentIdx].options.map((opt: string, idx: number) => {
+                  let btnBg = colors.surface;
+                  let border = colors.border;
+                  let txtColor = colors.text;
+
+                  if (quizAnswered) {
+                    if (idx === quizQuestions[quizCurrentIdx].correctIndex) {
+                      btnBg = 'rgba(76, 175, 80, 0.15)';
+                      border = '#4CAF50';
+                      txtColor = '#4CAF50';
+                    } else if (idx === quizSelectedOption) {
+                      btnBg = 'rgba(244, 67, 54, 0.15)';
+                      border = '#F44336';
+                      txtColor = '#F44336';
+                    }
+                  }
+
+                  return (
+                    <TouchableOpacity
+                      key={idx}
+                      style={[styles.quizOptionBtn, { backgroundColor: btnBg, borderColor: border }]}
+                      onPress={() => handleSelectQuizOption(idx)}
+                      disabled={quizAnswered}
+                    >
+                      <Text style={[styles.quizOptionText, { color: txtColor }]}>{opt}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {quizAnswered && (
+                <View style={styles.quizExplanation}>
+                  <Text style={[styles.explanationText, { color: colors.textSecondary }]}>
+                    💡 {quizQuestions[quizCurrentIdx].explanation}
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.nextQuizBtn, { backgroundColor: colors.primary }]}
+                    onPress={handleNextQuiz}
+                  >
+                    <Text style={styles.nextQuizBtnText}>
+                      {quizCurrentIdx === quizQuestions.length - 1 ? 'Finish Quiz' : 'Next Question'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* ── Sliding Puzzle Modal ── */}
+      <Modal
+        visible={puzzleVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPuzzleVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.background, alignItems: 'center' }]}>
+            <View style={[styles.modalHeader, { width: '100%' }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>Image Sliding Puzzle</Text>
+              <TouchableOpacity onPress={() => setPuzzleVisible(false)}>
+                <Icon name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 12 }}>
+              Moves: {puzzleMoves}
+            </Text>
+
+            {/* Puzzle grid */}
+            <View style={styles.puzzleBoard}>
+              {puzzleBoard.map((val, idx) => {
+                if (val === 8) {
+                  return <View key={idx} style={[styles.puzzleTile, styles.puzzleTileEmpty]} />;
+                }
+                const origRow = Math.floor(val / 3);
+                const origCol = val % 3;
+                const imageSource = spot.imageUrl || spot.imageUri
+                  ? { uri: (spot.imageUrl || spot.imageUri) as string }
+                  : { uri: 'https://images.unsplash.com/photo-1524492412937-b28074a5d7da?auto=format&fit=crop&w=600&q=80' };
+
+                return (
+                  <TouchableOpacity
+                    key={idx}
+                    style={styles.puzzleTile}
+                    onPress={() => handleTilePress(idx)}
+                    activeOpacity={0.8}
+                  >
+                    <FastImage
+                      source={imageSource}
+                      style={{
+                        position: 'absolute',
+                        width: 270,
+                        height: 270,
+                        top: -origRow * 90,
+                        left: -origCol * 90,
+                      }}
+                      resizeMode="cover"
+                    />
+                    <View style={styles.tileNumberBadge}>
+                      <Text style={styles.tileNumberText}>{val + 1}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {puzzleSolved && (
+              <View style={{ alignItems: 'center', marginTop: 16 }}>
+                <Text style={{ fontSize: 18, fontWeight: '700', color: '#4CAF50', marginBottom: 8 }}>
+                  🎉 Solved! +50 Points
+                </Text>
+                <TouchableOpacity
+                  style={[styles.submitButton, { backgroundColor: '#4CAF50', marginTop: 0 }]}
+                  onPress={() => setPuzzleVisible(false)}
+                >
+                  <Text style={styles.submitButtonText}>Claim reward</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <RideOptionsSheet
+        visible={rideSheetVisible}
+        onClose={() => setRideSheetVisible(false)}
+        destLat={spot.latitude}
+        destLng={spot.longitude}
+        destName={spot.name}
+      />
+    </View>
+  );
+}
+
+function createStyles(theme: ReturnType<typeof useTheme>['theme']) {
+  const c = theme;
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: c.background,
+    },
+    header: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.sm,
+    },
+    backButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      padding: spacing.xs,
+    },
+    glassButton: {
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      padding: 8,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.1)',
+    },
+    backText: {
+      color: c.primary,
+      fontSize: 16,
+      fontWeight: 'bold',
+      marginLeft: 4,
+    },
+    categoryIcon: {
+      fontSize: 24,
+      marginLeft: 8,
+    },
+    headerActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    headerActionBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    infoRow: {
+      flexDirection: 'row',
+      gap: 12,
+      paddingHorizontal: 20,
+      marginBottom: 16,
+    },
+    infoCard: {
+      flex: 1,
+      padding: 14,
+      borderRadius: 14,
+      gap: 6,
+    },
+    content: {
+      flex: 1,
+    },
+    carouselContainer: {
+      height: 240,
+      width: SCREEN_WIDTH,
+      position: 'relative',
+    },
+    carousel: {
+      flex: 1,
+    },
+    carouselImage: {
+      width: SCREEN_WIDTH,
+      height: 240,
+    },
+    carouselOverlay: {
+      position: 'absolute',
+      bottom: -30,
+      right: 24,
+      backgroundColor: c.surface,
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      justifyContent: 'center',
+      alignItems: 'center',
+      elevation: 4,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.15,
+      shadowRadius: 5,
+    },
+    badgeIcon: {
+      fontSize: 32,
+    },
+    spotMeta: {
+      paddingHorizontal: spacing.md,
+      marginTop: spacing.md,
+      marginBottom: spacing.md,
+    },
+    name: {
+      fontSize: 24,
+      fontWeight: 'bold',
+      color: c.text,
+      marginBottom: 4,
+    },
+    location: {
+      fontSize: 14,
+      color: c.textSecondary,
+      fontWeight: '600',
+      marginBottom: 8,
+    },
+    ratingRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: 4,
+    },
+    stars: {
+      flexDirection: 'row',
+      gap: 2,
+    },
+    ratingText: {
+      fontSize: 13,
+      marginLeft: 6,
+      fontWeight: '600',
+    },
+    statsRow: {
+      flexDirection: 'row',
+      paddingHorizontal: spacing.md,
+      marginBottom: spacing.md,
+      gap: 8,
+    },
+    statCard: {
+      flex: 1,
+      backgroundColor: c.surface,
+      borderRadius: borderRadius.md,
+      padding: spacing.sm,
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    statValue: {
+      fontSize: 20,
+      fontWeight: 'bold',
+      color: c.text,
+      marginBottom: 2,
+    },
+    statLabel: {
+      fontSize: 11,
+      color: c.textMuted,
+      fontWeight: 'bold',
+    },
+    section: {
+      paddingHorizontal: spacing.md,
+      marginVertical: spacing.sm,
+    },
+    sectionTitle: {
+      fontSize: 17,
+      fontWeight: 'bold',
+      color: c.text,
+      marginBottom: spacing.xs,
+    },
+    gameSubText: {
+      fontSize: 12,
+      color: c.textMuted,
+      marginBottom: spacing.sm,
+    },
+    gamesRow: {
+      flexDirection: 'row',
+      gap: 10,
+    },
+    gameButton: {
+      flex: 1,
+      borderRadius: borderRadius.md,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.sm,
+      alignItems: 'center',
+      elevation: 2,
+    },
+    gameButtonText: {
+      color: '#fff',
+      fontSize: 13,
+      fontWeight: 'bold',
+      marginTop: 4,
+    },
+    gamePtsText: {
+      color: '#FFB300',
+      fontSize: 11,
+      fontWeight: '800',
+      marginTop: 2,
+    },
+    description: {
+      fontSize: 14,
+      color: c.textSecondary,
+      lineHeight: 22,
+    },
+    factCard: {
+      backgroundColor: c.surface,
+      borderRadius: borderRadius.md,
+      padding: spacing.md,
+      borderLeftWidth: 4,
+      borderLeftColor: c.primary,
+      marginBottom: spacing.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    factTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: c.text,
+      marginBottom: 3,
+    },
+    factDesc: {
+      fontSize: 13,
+      color: c.textSecondary,
+      lineHeight: 18,
+    },
+    actionSection: {
+      padding: spacing.md,
+      alignItems: 'center',
+      backgroundColor: c.surface,
+      marginHorizontal: spacing.md,
+      borderRadius: borderRadius.md,
+      marginVertical: spacing.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    actionTitle: {
+      fontSize: 16,
+      fontWeight: 'bold',
+      color: c.text,
+      marginBottom: 2,
+    },
+    actionSubtitle: {
+      fontSize: 13,
+      color: c.textSecondary,
+      textAlign: 'center',
+      marginBottom: spacing.sm,
+    },
+    visitedBadge: {
+      backgroundColor: c.success,
+      borderRadius: borderRadius.round,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+      alignItems: 'center',
+    },
+    visitedText: {
+      color: '#fff',
+      fontSize: 15,
+      fontWeight: 'bold',
+    },
+    itineraryBtn: {
+      backgroundColor: 'transparent',
+      borderRadius: borderRadius.md,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1.5,
+      borderColor: c.primary,
+      width: '100%',
+    },
+    itineraryBtnActive: {
+      backgroundColor: c.success,
+      borderColor: c.success,
+    },
+    itineraryBtnText: {
+      color: c.primary,
+      fontSize: 14,
+      fontWeight: 'bold',
+    },
+    checkInButton: {
+      backgroundColor: c.primary,
+      borderRadius: borderRadius.md,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    checkInButtonDisabled: {
+      backgroundColor: c.surfaceLight,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    checkInButtonText: {
+      color: '#fff',
+      fontSize: 14,
+      fontWeight: 'bold',
+    },
+    checkInButtonTextDisabled: {
+      color: c.textMuted,
+      fontSize: 13,
+      fontWeight: 'bold',
+    },
+    rideBtn: {
+      borderRadius: borderRadius.md,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: '100%',
+    },
+    rideBtnText: {
+      fontSize: 14,
+      fontWeight: 'bold',
+    },
+    reviewsHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.sm,
+    },
+    addReviewLink: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 15,
+      borderWidth: 1,
+    },
+    addReviewLinkText: {
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    xpCard: {
+      borderRadius: 16,
+      padding: 16,
+      borderWidth: 1,
+    },
+    xpHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+    xpLevelName: {
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    xpText: {
+      fontSize: 14,
+      fontWeight: '800',
+    },
+    progressBarBg: {
+      height: 8,
+      borderRadius: 4,
+      overflow: 'hidden',
+    },
+    progressBarFill: {
+      height: '100%',
+      borderRadius: 4,
+    },
+    xpFooter: {
+      marginTop: 12,
+    },
+    xpLabel: {
+      fontSize: 12,
+    },
+    noReviews: {
+      fontSize: 13,
+      fontStyle: 'italic',
+      textAlign: 'center',
+      marginVertical: 12,
+    },
+    reviewCard: {
+      backgroundColor: c.surface,
+      borderRadius: borderRadius.md,
+      padding: spacing.md,
+      marginBottom: spacing.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    reviewUserRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 6,
+    },
+    userAvatar: {
+      fontSize: 24,
+      marginRight: 8,
+    },
+    reviewUser: {
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    reviewDate: {
+      fontSize: 11,
+    },
+    reviewContent: {
+      fontSize: 13,
+      lineHeight: 18,
+      marginTop: 2,
+    },
+    reviewPhotosRow: {
+      flexDirection: 'row',
+      marginTop: spacing.sm,
+      marginHorizontal: -spacing.sm,
+      paddingHorizontal: spacing.sm,
+    },
+    reviewPhoto: {
+      width: 70,
+      height: 70,
+      borderRadius: borderRadius.sm,
+      marginRight: spacing.sm,
+    },
+    reviewActions: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      marginTop: spacing.sm,
+    },
+    helpfulBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      padding: spacing.xs,
+      borderRadius: borderRadius.sm,
+      backgroundColor: c.surfaceLight,
+    },
+    helpfulText: {
+      fontSize: 11,
+      fontWeight: '600',
+      marginLeft: 4,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: spacing.md,
+    },
+    modalCard: {
+      width: '100%',
+      maxWidth: 340,
+      borderRadius: borderRadius.lg,
+      padding: spacing.lg,
+      elevation: 8,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.2,
+      shadowRadius: 8,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.md,
+    },
+    modalTitle: {
+      fontSize: 18,
+      fontWeight: 'bold',
+    },
+    inputLabel: {
+      fontSize: 13,
+      fontWeight: '700',
+      marginBottom: 6,
+    },
+    starsInput: {
+      flexDirection: 'row',
+      gap: 12,
+      justifyContent: 'center',
+      marginVertical: 10,
+    },
+    reviewInput: {
+      borderWidth: 1,
+      borderRadius: borderRadius.md,
+      padding: spacing.sm,
+      height: 100,
+      textAlignVertical: 'top',
+      fontSize: 13,
+      marginBottom: spacing.md,
+    },
+    submitButton: {
+      borderRadius: borderRadius.md,
+      paddingVertical: spacing.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 10,
+      width: '100%',
+    },
+    submitButtonText: {
+      color: '#fff',
+      fontSize: 14,
+      fontWeight: 'bold',
+    },
+    quizQuestionText: {
+      fontSize: 15,
+      fontWeight: '600',
+      lineHeight: 22,
+      marginBottom: spacing.md,
+    },
+    quizOptions: {
+      gap: 8,
+      marginBottom: spacing.md,
+    },
+    quizOptionBtn: {
+      borderWidth: 1,
+      borderRadius: borderRadius.md,
+      padding: spacing.md,
+    },
+    quizOptionText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    quizExplanation: {
+      marginTop: spacing.sm,
+      paddingTop: spacing.md,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    explanationText: {
+      fontSize: 13,
+      lineHeight: 18,
+      marginBottom: spacing.md,
+    },
+    nextQuizBtn: {
+      borderRadius: borderRadius.md,
+      paddingVertical: spacing.sm,
+      alignItems: 'center',
+    },
+    nextQuizBtnText: {
+      color: '#fff',
+      fontSize: 13,
+      fontWeight: 'bold',
+    },
+    actionStripContainer: {
+      marginTop: spacing.md,
+      paddingLeft: spacing.md,
+    },
+    actionStrip: {
+      paddingRight: spacing.md,
+      gap: 12,
+    },
+    actionStripBtn: {
+      alignItems: 'center',
+      minWidth: 60,
+    },
+    actionIconBg: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 6,
+    },
+    actionStripText: {
+      fontSize: 11,
+      color: c.textSecondary,
+      fontWeight: '600',
+    },
+    infoGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 12,
+      marginBottom: spacing.md,
+    },
+    infoGridItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      width: '47%',
+      backgroundColor: c.surface,
+      padding: spacing.md,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    infoGridTextCol: {
+      marginLeft: 10,
+    },
+    infoGridLabel: {
+      fontSize: 11,
+      color: c.textMuted,
+      fontWeight: '600',
+    },
+    infoGridValue: {
+      fontSize: 13,
+      color: c.text,
+      fontWeight: 'bold',
+      marginTop: 2,
+    },
+    amenitiesRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      backgroundColor: c.surfaceLight,
+      padding: spacing.md,
+      borderRadius: borderRadius.md,
+    },
+    amenityBadge: {
+      alignItems: 'center',
+    },
+    amenityText: {
+      fontSize: 10,
+      color: c.text,
+      marginTop: 4,
+      fontWeight: '500',
+    },
+    sectionHeaderRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.sm,
+    },
+    seeAllText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    vendorsList: {
+      marginHorizontal: -spacing.md,
+      paddingHorizontal: spacing.md,
+    },
+    vendorCard: {
+      width: 200,
+      borderRadius: borderRadius.md,
+      marginRight: spacing.md,
+      overflow: 'hidden',
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    vendorImg: {
+      width: '100%',
+      height: 100,
+    },
+    vendorInfo: {
+      padding: spacing.sm,
+    },
+    vendorName: {
+      fontSize: 14,
+      fontWeight: 'bold',
+      color: c.text,
+    },
+    vendorType: {
+      fontSize: 11,
+      color: c.textMuted,
+      marginTop: 2,
+    },
+    reelsList: {
+      marginHorizontal: -spacing.md,
+      paddingHorizontal: spacing.md,
+    },
+    reelThumbCard: {
+      width: 110,
+      height: 180,
+      borderRadius: borderRadius.md,
+      marginRight: spacing.sm,
+      overflow: 'hidden',
+    },
+    reelThumbImg: {
+      width: '100%',
+      height: '100%',
+    },
+    reelOverlay: {
+      position: 'absolute',
+      bottom: 8,
+      left: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    reelViews: {
+      color: '#fff',
+      fontSize: 10,
+      fontWeight: 'bold',
+      marginLeft: 4,
+    },
+    puzzleBoard: {
+      width: 270,
+      height: 270,
+      flexWrap: 'wrap',
+      flexDirection: 'row',
+      backgroundColor: '#E2E8F0',
+      borderWidth: 1,
+      borderColor: '#CBD5E1',
+    },
+    puzzleTile: {
+      width: 90,
+      height: 90,
+      borderWidth: 1,
+      borderColor: '#fff',
+      position: 'relative',
+      overflow: 'hidden',
+    },
+    puzzleTileEmpty: {
+      backgroundColor: 'transparent',
+    },
+    tileNumberBadge: {
+      position: 'absolute',
+      bottom: 2,
+      right: 2,
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      borderRadius: 4,
+      paddingHorizontal: 4,
+      paddingVertical: 1,
+    },
+    tileNumberText: {
+      fontSize: 10,
+      color: '#fff',
+      fontWeight: 'bold',
+    },
+  });
+}

@@ -1,0 +1,25 @@
+ALTER TABLE "vendors"
+  ADD COLUMN IF NOT EXISTS "vendor_code" TEXT,
+  ADD COLUMN IF NOT EXISTS "reviewed_by_id" TEXT,
+  ADD COLUMN IF NOT EXISTS "reviewed_at" TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS "services" JSONB,
+  ADD COLUMN IF NOT EXISTS "show_on_map" BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS "show_contact" BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS "show_website" BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS "show_images" BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS "show_offers" BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS "show_reels" BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS "show_navigation" BOOLEAN NOT NULL DEFAULT TRUE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "vendors_vendor_code_key" ON "vendors"("vendor_code");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'vendors_reviewed_by_id_fkey'
+  ) THEN
+    ALTER TABLE "vendors"
+      ADD CONSTRAINT "vendors_reviewed_by_id_fkey"
+      FOREIGN KEY ("reviewed_by_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;

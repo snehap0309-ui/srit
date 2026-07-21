@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "701936644079",
+    "project_id": "palsafar",
+    "storage_bucket": "palsafar.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:701936644079:android:7980f94bce3c56bdc6501a",
+        "android_client_info": {
+          "package_name": "com.palsasafar"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDuVv3BWXNSHnSf2S-6Af8cMzfju9FnGfc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

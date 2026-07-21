@@ -1,0 +1,1183 @@
+import { View, Text, ScrollView, TouchableOpacity, Dimensions, Linking, Share, Alert, ActivityIndicator, RefreshControl, Platform, Switch, StatusBar, StyleSheet, Modal, TextInput } from 'react-native';
+import FastImage from 'react-native-fast-image';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import Pal from '../design/DesignSystem';
+import { GlassCard } from '../components/ui/GlassCard';
+import { Badge } from '../components/ui/Badge';
+import { GradientButton } from '../components/ui/GradientButton';
+import { vendorsApi, VendorPublicDetails, VendorPublicOffer, VendorReel, VendorReview } from '../services/api/vendors';
+import { VENDOR_CATEGORY_EMOJI } from '../data/vendors';
+import Icon from 'react-native-vector-icons/Ionicons';
+import { useDataContext } from '../context/DataContext';
+import { useUserContext } from '../context/UserContext';
+import Geolocation from 'react-native-geolocation-service';
+import { useVendorScreenInsets, VendorUI } from '../design/vendorLayout';
+import ProfileModeSwitcher from '../components/ProfileModeSwitcher';
+import type { UserActiveMode } from '../types';
+
+const { width } = Dimensions.get('window');
+const CARD_GAP = VendorUI.space.md;
+const H_PAD = VendorUI.space.screen;
+const CARD_WIDTH = (width - H_PAD * 2 - CARD_GAP) / 2;
+const COVER_HEIGHT = 160;
+const AVATAR_SIZE = 92;
+const AVATAR_RING = 4;
+/** Avoid remount/tab-switch spam against the global API limiter */
+const PROFILE_CACHE_MS = 60_000;
+
+function mapOffers(list: any[]): VendorPublicOffer[] {
+  return (list || []).map((o: any) => ({
+    id: o.id,
+    title: o.title || o.offerTitle,
+    description: o.description || o.offerDescription,
+    discountType: o.discountType,
+    discountValue: o.discountValue,
+    pointsRequired: o.pointsRequired,
+    validTill: o.validTill,
+  }));
+}
+
+function mapMeToPublic(me: any, offers?: any[]): VendorPublicDetails {
+  return {
+    id: me.id,
+    businessName: me.businessName,
+    businessType: me.businessType || me.category,
+    description: me.description ?? null,
+    address: me.address,
+    city: me.city,
+    state: me.state,
+    latitude: me.latitude ?? null,
+    longitude: me.longitude ?? null,
+    imageUrl: me.imageUrl ?? null,
+    website: me.website ?? null,
+    operatingHours: me.operatingHours || me.openingHours || null,
+    images: me.images || [],
+    phone: me.phone ?? null,
+    showContact: me.showContact ?? true,
+    showWebsite: me.showWebsite ?? true,
+    showImages: me.showImages ?? true,
+    showOffers: me.showOffers ?? true,
+    showReels: me.showReels ?? true,
+    showNavigation: me.showNavigation ?? true,
+    rating: me.rating ?? null,
+    reviewCount: me.reviewCount ?? 0,
+    offers: mapOffers(offers ?? me.offers ?? []),
+  };
+}
+
+const PRESET_AVATARS = ['👦', '👧', '👨', '👩', '👶', '👸', '🤴', '🧑', '🧒', '👱'];
+
+export default function VendorProfileScreen({
+  vendorId,
+  self = false,
+  initialTab = 'offers',
+  onNavigate,
+}: {
+  vendorId: string;
+  self?: boolean;
+  initialTab?: 'offers' | 'reels' | 'info';
+  onNavigate?: (screen: string, params?: any) => void;
+}) {
+  const { updateVendorProfile, currentVendor, vendorOffers } = useDataContext();
+  const { user, setActiveMode, isGuest } = useUserContext();
+  const screenInsets = useVendorScreenInsets({ withTabBar: self });
+  const [vendor, setVendor] = useState<VendorPublicDetails | null>(null);
+  const [status, setStatus] = useState<'PENDING' | 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED' | null>(null);
+  const [reels, setReels] = useState<VendorReel[]>([]);
+  const [reviews, setReviews] = useState<VendorReview[]>([]);
+  const [loadingReviews, setLoadingReviews] = useState(false);
+  const [reviewModalVisible, setReviewModalVisible] = useState(false);
+  const [ratingInput, setRatingInput] = useState(5);
+  const [commentInput, setCommentInput] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'offers' | 'reels' | 'info'>(initialTab);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const [showOnMap, setShowOnMap] = useState(true);
+  const inFlightRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+  const reelsLoadedForRef = useRef<string | null>(null);
+  const activeMode = (user.activeMode || user.activeRole || 'VENDOR') as UserActiveMode;
+  const roles = (user.roles || []).map(String);
+  const canSwitchProfiles = self && (roles.includes('VENDOR') || user.permission === 'VENDOR');
+  // User + Vendor only — never offer Creator from vendor workspace
+  const switchableModes: UserActiveMode[] = canSwitchProfiles
+    ? ['USER' as UserActiveMode, 'VENDOR' as UserActiveMode]
+    : [];
+
+  const applyContextVendor = useCallback(() => {
+    if (!self || !currentVendor?.id) return false;
+    const myOffers = vendorOffers.filter(o => o.vendorId === currentVendor.id);
+    setVendor(mapMeToPublic(currentVendor, myOffers.length ? myOffers : undefined));
+    setShowOnMap(currentVendor.showOnMap ?? true);
+    setStatus(
+      currentVendor.verificationStatus === 'approved'
+        ? 'APPROVED'
+        : currentVendor.verificationStatus === 'rejected'
+        ? 'REJECTED'
+        : currentVendor.verificationStatus === 'changes_requested'
+        ? 'CHANGES_REQUESTED'
+        : 'PENDING',
+    );
+    setLoading(false);
+    return true;
+  }, [self, currentVendor, vendorOffers]);
+
+  const fetchReviews = useCallback(async (id: string) => {
+    if (!id) return;
+    setLoadingReviews(true);
+    try {
+      const list = await vendorsApi.getReviews(id);
+      setReviews(Array.isArray(list) ? list : []);
+    } catch {
+      setReviews([]);
+    } finally {
+      setLoadingReviews(false);
+    }
+  }, []);
+
+  const fetchReelsOnce = useCallback(async (id: string) => {
+    if (!id || reelsLoadedForRef.current === id) return;
+    try {
+      const reelsRes = await vendorsApi.getVendorReels(id);
+      setReels((reelsRes?.data || []) as VendorReel[]);
+      reelsLoadedForRef.current = id;
+    } catch {
+      setReels([]);
+    }
+  }, []);
+
+  const fetchData = useCallback(async (force = false) => {
+    if (inFlightRef.current) return;
+    const now = Date.now();
+    if (!force && vendor && now - lastFetchAtRef.current < PROFILE_CACHE_MS) {
+      setRefreshing(false);
+      setLoading(false);
+      return;
+    }
+
+    setLoadError(null);
+    inFlightRef.current = true;
+    try {
+      if (self) {
+        // Prefer session context — avoid burning the global rate limit on every Profile tab open.
+        const painted = applyContextVendor();
+        if (painted && !force) {
+          lastFetchAtRef.current = lastFetchAtRef.current || now;
+          if (activeTab === 'reels' && currentVendor?.id) {
+            fetchReelsOnce(currentVendor.id).catch(() => {});
+          }
+          return;
+        }
+
+        const meRes = await vendorsApi.getMe();
+        const me: any = meRes?.data ?? meRes;
+        if (!me?.id) throw new Error('No vendor account found for this login');
+
+        const ctxOffers = vendorOffers.filter(o => o.vendorId === me.id);
+        const offersSource = (me.offers && me.offers.length > 0)
+          ? me.offers
+          : ctxOffers;
+        setVendor(mapMeToPublic(me, offersSource));
+        setShowOnMap(me.showOnMap ?? true);
+        setStatus(me.status || null);
+        lastFetchAtRef.current = Date.now();
+
+        if (activeTab === 'reels') {
+          await fetchReelsOnce(me.id);
+        }
+        fetchReviews(me.id).catch(() => {});
+      } else {
+        const [v, r] = await Promise.all([
+          vendorsApi.getVendorDetails(vendorId),
+          vendorsApi.getVendorReels(vendorId),
+        ]);
+        setVendor(v.data);
+        setReels(r.data || []);
+        reelsLoadedForRef.current = vendorId;
+        setStatus('APPROVED');
+        lastFetchAtRef.current = Date.now();
+        await fetchReviews(vendorId);
+      }
+    } catch (err: any) {
+      console.warn('Failed to load vendor:', err);
+      const msg = String(err?.message || '');
+      const isRateLimited = err?.status === 429 || /too many requests/i.test(msg);
+      // Always keep context/cached profile visible on rate limit
+      if (self) applyContextVendor();
+      if (!vendor && !currentVendor) {
+        setLoadError(isRateLimited
+          ? 'Too many requests. Pull to refresh in a minute.'
+          : (msg || 'Vendor not found'));
+      } else {
+        setLoadError(null);
+      }
+    } finally {
+      inFlightRef.current = false;
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [vendorId, self, vendor, applyContextVendor, vendorOffers, activeTab, fetchReelsOnce, fetchReviews, currentVendor]);
+
+  // Initial load / identity change — prefer context, then one getMe
+  useEffect(() => {
+    if (self) {
+      applyContextVendor();
+      // Only hit network if context could not paint the profile
+      if (!currentVendor?.id) {
+        fetchData(false);
+      } else {
+        setLoading(false);
+        lastFetchAtRef.current = Date.now();
+      }
+      return;
+    }
+    fetchData(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / vendor identity only
+  }, [self, vendorId]);
+
+  // Load reels lazily when user opens the Reels tab
+  useEffect(() => {
+    if (activeTab === 'reels' && vendor?.id) {
+      fetchReelsOnce(vendor.id);
+    }
+  }, [activeTab, vendor?.id, fetchReelsOnce]);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    reelsLoadedForRef.current = null;
+    fetchData(true);
+  };
+
+  const handleCall = () => {
+    if (vendor?.phone) Linking.openURL(`tel:${vendor.phone}`).catch(() => {});
+  };
+
+  const handleWebsite = () => {
+    if (vendor?.website) Linking.openURL(vendor.website).catch(() => {});
+  };
+
+  const handleNavigate = () => {
+    if (vendor?.latitude && vendor?.longitude) {
+      const url = Platform.select({
+        ios: `maps:0,0?q=${vendor.latitude},${vendor.longitude}(${encodeURIComponent(vendor.businessName)})`,
+        android: `geo:0,0?q=${vendor.latitude},${vendor.longitude}(${encodeURIComponent(vendor.businessName)})`,
+        default: `https://www.google.com/maps/search/?api=1&query=${vendor.latitude},${vendor.longitude}`,
+      });
+      if (url) Linking.openURL(url).catch(() => {});
+    }
+  };
+
+  const handleShare = async () => {
+    if (!vendor) return;
+    try {
+      await Share.share({
+        message: `Check out ${vendor.businessName} on PalSafar!\n📍 ${vendor.address}, ${vendor.city}, ${vendor.state}`,
+      });
+    } catch (e) { console.warn('Caught empty exception', e); }
+  };
+
+  const avgRating = useMemo(() => {
+    if (reviews.length > 0) {
+      return (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1);
+    }
+    if (vendor?.rating != null && Number(vendor.rating) > 0) return Number(vendor.rating).toFixed(1);
+    return null;
+  }, [reviews, vendor?.rating]);
+
+  const openReviewModal = () => {
+    if (self) return;
+    if (isGuest) {
+      Alert.alert('Sign In Required', 'Create an account or sign in to review this shop.');
+      return;
+    }
+    setRatingInput(5);
+    setCommentInput('');
+    setReviewModalVisible(true);
+  };
+
+  const handleAddReview = async () => {
+    if (!vendor?.id || self) return;
+    if (isGuest) {
+      Alert.alert('Sign In Required', 'Create an account or sign in to review this shop.');
+      return;
+    }
+    if (!commentInput.trim()) {
+      Alert.alert('Required', 'Please enter a review comment.');
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const newReview = await vendorsApi.addReview(vendor.id, ratingInput, commentInput.trim());
+      const normalized: VendorReview = {
+        id: newReview?.id || String(Date.now()),
+        rating: newReview?.rating ?? ratingInput,
+        content: newReview?.content ?? commentInput.trim(),
+        createdAt: newReview?.createdAt || new Date().toISOString(),
+        photos: newReview?.photos || [],
+        helpfulVotes: newReview?.helpfulVotes || 0,
+        user: newReview?.user || {
+          name: user?.displayName || 'You',
+          avatarStyle: user?.avatarStyle || 0,
+        },
+      };
+      setReviews(prev => [normalized, ...prev.filter(r => r.id !== normalized.id)]);
+      setVendor(prev => prev ? {
+        ...prev,
+        reviewCount: (prev.reviewCount || 0) + (reviews.some(r => r.id === normalized.id) ? 0 : 1),
+        rating: Number((
+          [normalized, ...reviews.filter(r => r.id !== normalized.id)]
+            .reduce((s, r) => s + r.rating, 0)
+          / Math.max(1, [normalized, ...reviews.filter(r => r.id !== normalized.id)].length)
+        ).toFixed(1)),
+      } : prev);
+      setCommentInput('');
+      setReviewModalVisible(false);
+      Alert.alert('Success', 'Thank you for your review!');
+      fetchReviews(vendor.id).catch(() => {});
+    } catch (err: any) {
+      if (err?.status === 401) {
+        Alert.alert('Sign In Required', 'Create an account or sign in to review this shop.');
+      } else {
+        Alert.alert('Error', err?.message || 'Could not submit review. Please try again.');
+      }
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const patchVisibility = async (
+    key: 'showOnMap' | 'showContact' | 'showWebsite' | 'showImages' | 'showOffers' | 'showReels' | 'showNavigation',
+    value: boolean,
+  ) => {
+    if (!self || !vendor) return;
+    const prev = vendor;
+    if (key === 'showOnMap') setShowOnMap(value);
+    setVendor({ ...vendor, [key]: value });
+    setSavingVisibility(true);
+    try {
+      await updateVendorProfile({ [key]: value } as any);
+    } catch (err: any) {
+      setVendor(prev);
+      if (key === 'showOnMap') setShowOnMap((prev as any).showOnMap ?? true);
+      Alert.alert('Update failed', err?.message || 'Could not update visibility settings.');
+    } finally {
+      setSavingVisibility(false);
+    }
+  };
+
+  const handleUseMyLocation = () => {
+    if (!self) return;
+    Geolocation.getCurrentPosition(
+      async (pos) => {
+        setSavingVisibility(true);
+        try {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          await updateVendorProfile({ latitude: lat, longitude: lng });
+          setVendor(prev => prev ? { ...prev, latitude: lat, longitude: lng } : prev);
+          Alert.alert('Location updated', 'Your map pin now uses your current GPS position.');
+        } catch (err: any) {
+          Alert.alert('Update failed', err?.message || 'Could not save location.');
+        } finally {
+          setSavingVisibility(false);
+        }
+      },
+      (err) => Alert.alert('Location unavailable', err.message || 'Enable GPS and try again.'),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 },
+    );
+  };
+
+  const profileCompletion = (() => {
+    if (!vendor) return 0;
+    const checks = [
+      !!vendor.businessName,
+      !!vendor.description,
+      !!vendor.phone,
+      !!vendor.operatingHours,
+      !!vendor.imageUrl || (vendor.images?.length ?? 0) > 0,
+      !!vendor.website,
+      !!(vendor.latitude && vendor.longitude),
+    ];
+    return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  })();
+
+  const handleOfferPress = (offer: VendorPublicOffer) => {
+    if (onNavigate) {
+      vendorsApi.recordOfferClick(offer.id).catch(() => {});
+      onNavigate('VendorOffers');
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: Pal.colors.light.background, justifyContent: 'center', alignItems: 'center', gap: 12 }} edges={['top', 'left', 'right']}>
+        <StatusBar barStyle="dark-content" backgroundColor={Pal.colors.light.background} />
+        <ActivityIndicator size="large" color={Pal.colors.light.primary} />
+        <Text style={{ color: Pal.colors.light.textMuted, fontSize: 13 }}>Loading vendor...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!vendor) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: Pal.colors.light.background, justifyContent: 'center', alignItems: 'center', gap: 16, padding: 40 }} edges={['top', 'left', 'right']}>
+        <StatusBar barStyle="dark-content" backgroundColor={Pal.colors.light.background} />
+        <Text style={{ fontSize: 56 }}>🏪</Text>
+        <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 18, color: Pal.colors.light.text, textAlign: 'center' }}>
+          {loadError || 'Vendor not found'}
+        </Text>
+        <Text style={{ fontSize: 13, color: Pal.colors.light.textMuted, textAlign: 'center' }}>
+          {self
+            ? 'Could not load your vendor account. Go back and try again.'
+            : 'This business may still be pending approval or is not listed publicly yet.'}
+        </Text>
+        <GradientButton title="Go Back" onPress={() => onNavigate?.('goBack')} size="sm" />
+      </SafeAreaView>
+    );
+  }
+
+  const categoryEmoji = VENDOR_CATEGORY_EMOJI[vendor.businessType?.toLowerCase()] || '🏪';
+  const statusLabel =
+    status === 'PENDING' ? 'Pending Approval' :
+    status === 'REJECTED' ? 'Rejected' :
+    status === 'CHANGES_REQUESTED' ? 'Changes Requested' :
+    status === 'APPROVED' ? 'Approved' : null;
+
+  const coverUri = vendor.images?.[0] || vendor.imageUrl || null;
+  const avatarUri = vendor.imageUrl || vendor.images?.[0] || null;
+
+  return (
+    <View style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor={Pal.colors.light.background} />
+      {switchableModes.length > 1 ? (
+        <ProfileModeSwitcher
+          withTopInset
+          modes={switchableModes}
+          activeMode={activeMode}
+          modeIdentities={{
+            ...(user?.displayName ? { USER: user.displayName } : {}),
+            ...(vendor.businessName ? { VENDOR: vendor.businessName } : {}),
+          }}
+          onSwitch={async (mode) => {
+            try {
+              await setActiveMode(mode);
+            } catch (error: any) {
+              Alert.alert('Could not switch profile', error?.message || 'Please try again.');
+            }
+          }}
+        />
+      ) : null}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: screenInsets.scrollPadBottom }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+      >
+        {/* Cover — clipped so it never paints over content below */}
+        <View style={styles.coverWrap}>
+          {coverUri ? (
+            <FastImage source={{ uri: coverUri }} style={styles.coverImage} resizeMode="cover" />
+          ) : (
+            <View style={styles.coverPlaceholder}>
+              <Text style={styles.coverEmoji}>{categoryEmoji}</Text>
+            </View>
+          )}
+          <View style={styles.coverScrim} />
+          <View style={[styles.coverActions, { top: screenInsets.top + 8 }]}>
+            <TouchableOpacity
+              onPress={() => onNavigate?.('goBack')}
+              style={styles.coverBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Icon name="chevron-back" size={20} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleShare} style={styles.coverBtn}>
+              <Icon name="share-outline" size={18} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Avatar overlaps cover only; text/card sit fully below */}
+        <View style={styles.profileBlock}>
+          <View style={styles.avatarWrap}>
+            <View style={styles.avatarRing}>
+              {avatarUri ? (
+                <FastImage
+                  source={{ uri: avatarUri }}
+                  style={styles.avatarImage}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={styles.avatarFallback}>
+                  <Text style={styles.avatarEmoji}>{categoryEmoji}</Text>
+                </View>
+              )}
+            </View>
+          </View>
+
+          {self ? (
+            <View style={styles.previewBanner}>
+              <Text style={styles.previewTitle}>Public listing preview</Text>
+              <Text style={styles.previewSub}>
+                This is how tourists see your business on the map and search.
+              </Text>
+              <TouchableOpacity
+                onPress={() => onNavigate?.('VendorSettings')}
+                style={{
+                  marginTop: 10,
+                  alignSelf: 'flex-start',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  backgroundColor: Pal.colors.light.primary,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 16,
+                }}
+              >
+                <Icon name="create-outline" size={14} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 12, fontFamily: Pal.typography.fontFamily.bold }}>
+                  Edit business details
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          <View style={styles.infoCard}>
+            <Text style={styles.businessName} numberOfLines={2}>{vendor.businessName}</Text>
+            {(avgRating || (vendor.reviewCount ?? 0) > 0) ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                <Icon name="star" size={14} color="#FFB300" />
+                <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary, fontFamily: Pal.typography.fontFamily.semibold }}>
+                  {avgRating || '—'} ({reviews.length || vendor.reviewCount || 0} reviews)
+                </Text>
+              </View>
+            ) : null}
+            <View style={styles.badgeRow}>
+              <Badge label={`${categoryEmoji} ${vendor.businessType}`} variant="outline" size="sm" />
+              <Badge label={`📍 ${vendor.city}`} variant="outline" size="sm" />
+              {self && statusLabel ? (
+                <Badge label={statusLabel} variant="outline" size="sm" />
+              ) : null}
+            </View>
+            {self && status === 'PENDING' ? (
+              <Text style={styles.pendingHint}>
+                Under review — public listing unlocks after approval.
+              </Text>
+            ) : null}
+
+            <View style={styles.actionRow}>
+              {vendor.showContact && vendor.phone ? (
+                <TouchableOpacity onPress={handleCall} style={[styles.actionBtn, styles.actionPrimary]} activeOpacity={0.85}>
+                  <Icon name="call-outline" size={16} color={Pal.colors.light.primary} />
+                  <Text style={styles.actionPrimaryText}>Call</Text>
+                </TouchableOpacity>
+              ) : null}
+              {vendor.showNavigation && vendor.latitude ? (
+                <TouchableOpacity onPress={handleNavigate} style={[styles.actionBtn, styles.actionSecondary]} activeOpacity={0.85}>
+                  <Icon name="navigate-outline" size={16} color={Pal.colors.light.secondary} />
+                  <Text style={styles.actionSecondaryText}>Navigate</Text>
+                </TouchableOpacity>
+              ) : null}
+              {vendor.showWebsite && vendor.website ? (
+                <TouchableOpacity onPress={handleWebsite} style={[styles.actionBtn, styles.actionAccent]} activeOpacity={0.85}>
+                  <Icon name="globe-outline" size={16} color={Pal.colors.light.accent} />
+                  <Text style={styles.actionAccentText}>Website</Text>
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity onPress={handleShare} style={styles.actionIconOnly} activeOpacity={0.85}>
+                <Icon name="share-outline" size={18} color={Pal.colors.light.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+
+        {/* Description */}
+        {vendor.description && (
+          <View style={{ paddingHorizontal: H_PAD, marginBottom: Pal.spacing[4] }}>
+            <GlassCard style={{ padding: Pal.spacing[4] }}>
+              <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 14, color: Pal.colors.light.text, marginBottom: 6 }}>About</Text>
+              <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary, lineHeight: 20 }}>{vendor.description}</Text>
+            </GlassCard>
+          </View>
+        )}
+
+        {/* Business Hours */}
+        {vendor.operatingHours && (
+          <View style={{ paddingHorizontal: H_PAD, marginBottom: Pal.spacing[4] }}>
+            <GlassCard style={{ padding: Pal.spacing[4] }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Icon name="time-outline" size={18} color={Pal.colors.light.primary} />
+                <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 14, color: Pal.colors.light.text }}>Business Hours</Text>
+              </View>
+              <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary, marginTop: 6 }}>{vendor.operatingHours}</Text>
+            </GlassCard>
+          </View>
+        )}
+
+        {/* Reviews */}
+        <View style={{ paddingHorizontal: H_PAD, marginBottom: Pal.spacing[4] }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 15, color: Pal.colors.light.text }}>
+              Customer Reviews
+            </Text>
+            {!self ? (
+              <TouchableOpacity
+                onPress={openReviewModal}
+                style={{
+                  borderWidth: 1,
+                  borderColor: Pal.colors.light.primary,
+                  borderRadius: Pal.borderRadius.full,
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                }}
+              >
+                <Text style={{ fontSize: 12, color: Pal.colors.light.primary, fontFamily: Pal.typography.fontFamily.semibold }}>
+                  Write a Review
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {loadingReviews ? (
+            <ActivityIndicator size="small" color={Pal.colors.light.primary} style={{ marginVertical: 16 }} />
+          ) : reviews.length === 0 ? (
+            <GlassCard style={{ padding: Pal.spacing[4] }}>
+              <Text style={{ fontSize: 13, color: Pal.colors.light.textMuted }}>
+                {self ? 'No customer reviews yet.' : 'No reviews yet. Be the first to share your experience!'}
+              </Text>
+            </GlassCard>
+          ) : (
+            <View style={{ gap: 10 }}>
+              {reviews.map((item) => (
+                <GlassCard key={item.id} style={{ padding: Pal.spacing[4], gap: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Text style={{ fontSize: 22 }}>{PRESET_AVATARS[item.user?.avatarStyle ?? 0] || '🧭'}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 13, color: Pal.colors.light.text }}>
+                        {item.user?.name || 'Explorer'}
+                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 2, marginTop: 2 }}>
+                        {[1, 2, 3, 4, 5].map((s) => (
+                          <Icon key={s} name="star" size={12} color={s <= item.rating ? '#FFB300' : '#E0E0E0'} />
+                        ))}
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: 11, color: Pal.colors.light.textMuted }}>
+                      {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : ''}
+                    </Text>
+                  </View>
+                  {!!item.content && (
+                    <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary, lineHeight: 19 }}>
+                      {item.content}
+                    </Text>
+                  )}
+                  {!self ? (
+                    <TouchableOpacity
+                      onPress={() => {
+                        vendorsApi.markReviewHelpful(vendor.id, item.id).catch(() => {});
+                        setReviews(prev => prev.map(r =>
+                          r.id === item.id ? { ...r, helpfulVotes: (r.helpfulVotes || 0) + 1 } : r
+                        ));
+                      }}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}
+                    >
+                      <Icon name="thumbs-up-outline" size={14} color={Pal.colors.light.primary} />
+                      <Text style={{ fontSize: 12, color: Pal.colors.light.primary }}>
+                        Helpful ({item.helpfulVotes || 0})
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </GlassCard>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {/* Gallery */}
+        {vendor.showImages && vendor.images?.length > 1 && (
+          <View style={{ paddingHorizontal: H_PAD, marginBottom: Pal.spacing[4] }}>
+            <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 15, color: Pal.colors.light.text, marginBottom: 10 }}>Gallery</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+              {vendor.images.slice(1).map((img, i) => (
+                <FastImage key={i} source={{ uri: img }} style={{ width: 140, height: 100, borderRadius: Pal.borderRadius.lg }} />
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Tab Bar: Offers | Reels | Info */}
+        <View style={{ flexDirection: 'row', paddingHorizontal: H_PAD, marginBottom: Pal.spacing[4], gap: 4 }}>
+          {vendor.showOffers && (
+            <TouchableOpacity
+              onPress={() => setActiveTab('offers')}
+              style={{ flex: 1, paddingVertical: 10, borderRadius: Pal.borderRadius.full, backgroundColor: activeTab === 'offers' ? Pal.colors.light.primary : Pal.colors.light.surface, alignItems: 'center', borderWidth: 1, borderColor: activeTab === 'offers' ? Pal.colors.light.primary : Pal.colors.light.border }}
+            >
+              <Text style={{ fontSize: 12, fontFamily: Pal.typography.fontFamily.semibold, color: activeTab === 'offers' ? '#fff' : Pal.colors.light.text }}>Offers</Text>
+            </TouchableOpacity>
+          )}
+          {vendor.showReels && reels.length > 0 && (
+            <TouchableOpacity
+              onPress={() => setActiveTab('reels')}
+              style={{ flex: 1, paddingVertical: 10, borderRadius: Pal.borderRadius.full, backgroundColor: activeTab === 'reels' ? Pal.colors.light.primary : Pal.colors.light.surface, alignItems: 'center', borderWidth: 1, borderColor: activeTab === 'reels' ? Pal.colors.light.primary : Pal.colors.light.border }}
+            >
+              <Text style={{ fontSize: 12, fontFamily: Pal.typography.fontFamily.semibold, color: activeTab === 'reels' ? '#fff' : Pal.colors.light.text }}>Reels</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={() => setActiveTab('info')}
+            style={{ flex: 1, paddingVertical: 10, borderRadius: Pal.borderRadius.full, backgroundColor: activeTab === 'info' ? Pal.colors.light.primary : Pal.colors.light.surface, alignItems: 'center', borderWidth: 1, borderColor: activeTab === 'info' ? Pal.colors.light.primary : Pal.colors.light.border }}
+          >
+            <Text style={{ fontSize: 12, fontFamily: Pal.typography.fontFamily.semibold, color: activeTab === 'info' ? '#fff' : Pal.colors.light.text }}>Info</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Tab Content */}
+        {activeTab === 'offers' && vendor.showOffers && (
+          <View style={{ paddingHorizontal: H_PAD }}>
+            {vendor.offers?.length > 0 ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: CARD_GAP }}>
+                {vendor.offers.map((offer) => (
+                  <TouchableOpacity key={offer.id} onPress={() => handleOfferPress(offer)} style={{ width: CARD_WIDTH }}>
+                    <GlassCard style={{ padding: Pal.spacing[3], gap: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={{ fontSize: 20 }}>🎫</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 13, color: Pal.colors.light.text }} numberOfLines={1}>{offer.title}</Text>
+                          <Text style={{ fontSize: 10, color: Pal.colors.light.textMuted }}>{offer.discountType} · {offer.discountValue}{offer.discountType === 'percentage' ? '%' : '₹'} off</Text>
+                        </View>
+                      </View>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: Pal.colors.light.borderSoft, paddingTop: 6 }}>
+                        <Text style={{ fontSize: 11, color: Pal.colors.light.primary, fontFamily: Pal.typography.fontFamily.bold }}>{offer.pointsRequired} pts</Text>
+                        {offer.validTill && <Text style={{ fontSize: 9, color: Pal.colors.light.textMuted }}>Till {offer.validTill}</Text>}
+                      </View>
+                    </GlassCard>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : (
+              <View style={{ paddingVertical: 40, alignItems: 'center', gap: 8 }}>
+                <Text style={{ fontSize: 40 }}>📭</Text>
+                <Text style={{ fontSize: 13, color: Pal.colors.light.textMuted }}>No offers available</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {activeTab === 'reels' && vendor.showReels && reels.length > 0 && (
+          <View style={{ paddingHorizontal: H_PAD }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: CARD_GAP }}>
+              {reels.map((reel) => (
+                <TouchableOpacity key={reel.id} onPress={() => onNavigate?.('VendorReels', { vendorId, vendorName: vendor.businessName })} style={{ width: CARD_WIDTH }}>
+                  <GlassCard style={{ padding: Pal.spacing[3], gap: 6 }}>
+                    <View style={{ height: 120, borderRadius: Pal.borderRadius.md, backgroundColor: Pal.colors.light.primarySoft, alignItems: 'center', justifyContent: 'center' }}>
+                      {reel.thumbnail ? (
+                        <FastImage source={{ uri: reel.thumbnail }} style={{ width: '100%', height: '100%', borderRadius: Pal.borderRadius.md }} />
+                      ) : (
+                        <Icon name="play-circle" size={36} color={Pal.colors.light.primary} />
+                      )}
+                    </View>
+                    {reel.title && <Text style={{ fontSize: 12, fontFamily: Pal.typography.fontFamily.semibold, color: Pal.colors.light.text }} numberOfLines={1}>{reel.title}</Text>}
+                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                      <Text style={{ fontSize: 10, color: Pal.colors.light.textMuted }}>👁️ {reel.views}</Text>
+                      <Text style={{ fontSize: 10, color: Pal.colors.light.textMuted }}>❤️ {reel.likes}</Text>
+                    </View>
+                  </GlassCard>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {activeTab === 'info' && (
+          <View style={{ paddingHorizontal: H_PAD, gap: Pal.spacing[3] }}>
+            <GlassCard style={{ padding: Pal.spacing[4] }}>
+              <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 14, color: Pal.colors.light.text, marginBottom: 10 }}>📍 Address</Text>
+              <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary }}>{vendor.address}, {vendor.city}, {vendor.state}</Text>
+            </GlassCard>
+
+            {vendor.operatingHours && (
+              <GlassCard style={{ padding: Pal.spacing[4] }}>
+                <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 14, color: Pal.colors.light.text, marginBottom: 6 }}>🕐 Hours</Text>
+                <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary }}>{vendor.operatingHours}</Text>
+              </GlassCard>
+            )}
+
+            {vendor.showContact && (
+              <GlassCard style={{ padding: Pal.spacing[4] }}>
+                <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 14, color: Pal.colors.light.text, marginBottom: 6 }}>📞 Contact</Text>
+                {vendor.phone && <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary }}>{vendor.phone}</Text>}
+                {vendor.showWebsite && vendor.website && (
+                  <Text style={{ fontSize: 13, color: Pal.colors.light.primary, marginTop: 4 }}>{vendor.website}</Text>
+                )}
+              </GlassCard>
+            )}
+
+            {self ? (
+              <GlassCard style={{ padding: Pal.spacing[4], gap: 12 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ fontFamily: Pal.typography.fontFamily.semibold, fontSize: 14, color: Pal.colors.light.text }}>
+                    Listing settings
+                  </Text>
+                  {savingVisibility ? <ActivityIndicator size="small" color={Pal.colors.light.primary} /> : null}
+                </View>
+                <Text style={{ fontSize: 12, color: Pal.colors.light.textMuted }}>
+                  Profile {profileCompletion}% complete
+                </Text>
+                {[
+                  { key: 'showOnMap' as const, label: 'Show on map', value: showOnMap },
+                  { key: 'showContact' as const, label: 'Show phone', value: !!vendor.showContact },
+                  { key: 'showWebsite' as const, label: 'Show website', value: !!vendor.showWebsite },
+                  { key: 'showImages' as const, label: 'Show gallery', value: !!vendor.showImages },
+                  { key: 'showOffers' as const, label: 'Show offers', value: !!vendor.showOffers },
+                  { key: 'showReels' as const, label: 'Show reels', value: !!vendor.showReels },
+                  { key: 'showNavigation' as const, label: 'Show navigate', value: !!vendor.showNavigation },
+                ].map((row) => (
+                  <View key={row.key} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary }}>{row.label}</Text>
+                    <Switch
+                      value={row.value}
+                      onValueChange={(v) => patchVisibility(row.key, v)}
+                      disabled={savingVisibility}
+                      trackColor={{ false: Pal.colors.light.border, true: Pal.colors.light.primary }}
+                    />
+                  </View>
+                ))}
+                <TouchableOpacity
+                  onPress={handleUseMyLocation}
+                  disabled={savingVisibility}
+                  style={{
+                    marginTop: 4,
+                    height: 40,
+                    borderRadius: Pal.borderRadius.full,
+                    backgroundColor: Pal.colors.light.primarySoft,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 6,
+                  }}
+                >
+                  <Icon name="locate-outline" size={16} color={Pal.colors.light.primary} />
+                  <Text style={{ fontSize: 12, color: Pal.colors.light.primary, fontFamily: Pal.typography.fontFamily.semibold }}>
+                    Use my GPS for map pin
+                  </Text>
+                </TouchableOpacity>
+              </GlassCard>
+            ) : null}
+
+            {self ? (
+              <GlassCard style={{ marginTop: 16, gap: 4, paddingVertical: 8 }}>
+                <Text style={{
+                  fontFamily: Pal.typography.fontFamily.bold,
+                  fontSize: 15,
+                  color: Pal.colors.light.text,
+                  marginBottom: 4,
+                  paddingHorizontal: 4,
+                }}>
+                  Account
+                </Text>
+                {[
+                  { icon: 'people-outline', label: 'Customers', route: 'VendorCustomers' as const },
+                  { icon: 'card-outline', label: 'Subscription & billing', route: 'VendorSubscription' as const },
+                  { icon: 'receipt-outline', label: 'Billing history', route: 'BillingHistory' as const },
+                  { icon: 'create-outline', label: 'Business settings', route: 'VendorSettings' as const },
+                  { icon: 'notifications-outline', label: 'Notifications', route: 'Notifications' as const },
+                  { icon: 'trophy-outline', label: 'Leaderboard', route: 'Leaderboard' as const },
+                  { icon: 'document-text-outline', label: 'Terms & Conditions', route: 'LegalHub' as const },
+                  { icon: 'trash-outline', label: 'Delete account', route: 'DeleteAccount' as const, danger: true },
+                ].map((row) => (
+                  <TouchableOpacity
+                    key={row.route}
+                    onPress={() => onNavigate?.(row.route)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 10,
+                      paddingVertical: 12,
+                      paddingHorizontal: 4,
+                      borderTopWidth: 1,
+                      borderTopColor: Pal.colors.light.border,
+                    }}
+                  >
+                    <Icon
+                      name={row.icon}
+                      size={18}
+                      color={row.danger ? '#A84032' : Pal.colors.light.primary}
+                    />
+                    <Text style={{
+                      flex: 1,
+                      fontSize: 13,
+                      fontFamily: Pal.typography.fontFamily.semibold,
+                      color: row.danger ? '#A84032' : Pal.colors.light.text,
+                    }}>
+                      {row.label}
+                    </Text>
+                    <Icon name="chevron-forward" size={16} color={Pal.colors.light.textMuted} />
+                  </TouchableOpacity>
+                ))}
+              </GlassCard>
+            ) : null}
+          </View>
+        )}
+      </ScrollView>
+
+      <Modal
+        visible={reviewModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setReviewModalVisible(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}>
+          <View style={{
+            backgroundColor: Pal.colors.light.background,
+            borderTopLeftRadius: 20,
+            borderTopRightRadius: 20,
+            padding: Pal.spacing[5],
+            paddingBottom: Math.max(screenInsets.bottom, 24),
+            gap: 12,
+          }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ fontFamily: Pal.typography.fontFamily.bold, fontSize: 18, color: Pal.colors.light.text }}>
+                Write a Review
+              </Text>
+              <TouchableOpacity onPress={() => setReviewModalVisible(false)}>
+                <Icon name="close" size={24} color={Pal.colors.light.text} />
+              </TouchableOpacity>
+            </View>
+            <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary }}>Select Rating</Text>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {[1, 2, 3, 4, 5].map((val) => (
+                <TouchableOpacity key={val} onPress={() => setRatingInput(val)}>
+                  <Icon
+                    name={val <= ratingInput ? 'star' : 'star-outline'}
+                    size={34}
+                    color={val <= ratingInput ? '#FFB300' : Pal.colors.light.textMuted}
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={{ fontSize: 13, color: Pal.colors.light.textSecondary }}>Your Comments</Text>
+            <TextInput
+              style={{
+                minHeight: 100,
+                borderWidth: 1,
+                borderColor: Pal.colors.light.border,
+                borderRadius: Pal.borderRadius.lg,
+                padding: 12,
+                textAlignVertical: 'top',
+                color: Pal.colors.light.text,
+                backgroundColor: Pal.colors.light.surface,
+              }}
+              placeholder="Tell others about this shop..."
+              placeholderTextColor={Pal.colors.light.textMuted}
+              multiline
+              value={commentInput}
+              onChangeText={setCommentInput}
+            />
+            <TouchableOpacity
+              onPress={handleAddReview}
+              disabled={submittingReview}
+              style={{
+                height: 48,
+                borderRadius: Pal.borderRadius.full,
+                backgroundColor: Pal.colors.light.primary,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {submittingReview ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={{ color: '#fff', fontFamily: Pal.typography.fontFamily.semibold, fontSize: 15 }}>
+                  Submit Review
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: Pal.colors.light.background,
+  },
+  coverWrap: {
+    height: COVER_HEIGHT,
+    backgroundColor: Pal.colors.light.primarySoft,
+    overflow: 'hidden',
+  },
+  coverImage: {
+    width: '100%',
+    height: '100%',
+  },
+  coverPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Pal.colors.light.primarySoft,
+  },
+  coverEmoji: { fontSize: 64 },
+  coverScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(44, 24, 16, 0.18)',
+  },
+  coverActions: {
+    position: 'absolute',
+    left: H_PAD,
+    right: H_PAD,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  coverBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileBlock: {
+    paddingHorizontal: H_PAD,
+    // Pull avatar up over cover edge only — reserved space keeps text clear
+    marginTop: -(AVATAR_SIZE / 2),
+    marginBottom: Pal.spacing[4],
+    zIndex: 2,
+  },
+  avatarWrap: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  avatarRing: {
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
+    backgroundColor: '#FFFFFF',
+    borderWidth: AVATAR_RING,
+    borderColor: '#FFFFFF',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: 'rgba(185, 131, 75, 0.35)',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  avatarImage: {
+    width: AVATAR_SIZE - AVATAR_RING * 2,
+    height: AVATAR_SIZE - AVATAR_RING * 2,
+    borderRadius: (AVATAR_SIZE - AVATAR_RING * 2) / 2,
+  },
+  avatarFallback: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Pal.colors.light.primarySoft,
+  },
+  avatarEmoji: { fontSize: 36 },
+  previewBanner: {
+    backgroundColor: Pal.colors.light.primarySoft,
+    borderRadius: VendorUI.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: Pal.colors.light.border,
+    marginBottom: 12,
+  },
+  previewTitle: {
+    fontFamily: Pal.typography.fontFamily.semibold,
+    fontSize: 13,
+    color: Pal.colors.light.primaryDark,
+  },
+  previewSub: {
+    fontSize: 12,
+    color: Pal.colors.light.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  infoCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: VendorUI.radius.xl,
+    padding: Pal.spacing[4],
+    borderWidth: 1,
+    borderColor: Pal.colors.light.border,
+    shadowColor: 'rgba(185, 131, 75, 0.12)',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  businessName: {
+    fontFamily: Pal.typography.fontFamily.bold,
+    fontSize: 22,
+    color: Pal.colors.light.text,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+    marginTop: 10,
+  },
+  pendingHint: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#FF9F1C',
+    fontFamily: Pal.typography.fontFamily.medium,
+    textAlign: 'center',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 16,
+    alignItems: 'center',
+  },
+  actionBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: Pal.borderRadius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  actionPrimary: { backgroundColor: Pal.colors.light.primarySoft },
+  actionSecondary: { backgroundColor: Pal.colors.light.secondarySoft },
+  actionAccent: { backgroundColor: Pal.colors.light.accentSoft },
+  actionPrimaryText: {
+    fontSize: 12,
+    color: Pal.colors.light.primary,
+    fontFamily: Pal.typography.fontFamily.semibold,
+  },
+  actionSecondaryText: {
+    fontSize: 12,
+    color: Pal.colors.light.secondary,
+    fontFamily: Pal.typography.fontFamily.semibold,
+  },
+  actionAccentText: {
+    fontSize: 12,
+    color: Pal.colors.light.accent,
+    fontFamily: Pal.typography.fontFamily.semibold,
+  },
+  actionIconOnly: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: Pal.colors.light.surface,
+    borderWidth: 1,
+    borderColor: Pal.colors.light.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
