@@ -15,14 +15,18 @@ export default function Home() {
         const user = await getMe();
         if (cancelled) return;
         router.replace(isAdminUser(user) ? "/dashboard" : "/login");
-      } catch {
-        if (!cancelled) router.replace("/login");
+      } catch (err: any) {
+        if (cancelled) return;
+        const status = err?.response?.status ?? err?.status;
+        // Stay off dashboard only when unauthenticated; otherwise retry dashboard.
+        router.replace(status === 401 || status === 403 ? "/login" : "/dashboard");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- boot redirect once
+  }, []);
 
   return (
     <div className="flex h-screen items-center justify-center">

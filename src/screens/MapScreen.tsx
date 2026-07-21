@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Animated,
   Dimensions, ActivityIndicator, Platform,
@@ -121,6 +121,8 @@ interface MapScreenProps {
   onViewItinerary?: (placeId?: string) => void;
   selectedPlaceId?: string;
   selectedPlaceKey?: number;
+  initialMapTab?: 'places' | 'vendors';
+  mapTabKey?: number;
 }
 
 export default function MapScreen({
@@ -135,6 +137,8 @@ export default function MapScreen({
   onViewItinerary,
   selectedPlaceId,
   selectedPlaceKey,
+  initialMapTab,
+  mapTabKey,
 }: MapScreenProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -157,7 +161,9 @@ export default function MapScreen({
   const [mapError, setMapError] = useState<string | null>(null);
   const [webViewKey, setWebViewKey] = useState(0);
   const [locationRequested, setLocationRequested] = useState(false);
-  const [activeTab, setActiveTab] = useState<'places' | 'vendors'>('places');
+  const [activeTab, setActiveTab] = useState<'places' | 'vendors'>(
+    initialMapTab === 'vendors' ? 'vendors' : 'places',
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [remoteSuggestions, setRemoteSuggestions] = useState<MarkerData[]>([]);
@@ -579,6 +585,26 @@ export default function MapScreen({
 
   // Open map detail card when Home/Search (or another screen) passes a place id
   const lastOpenedKeyRef = useRef<number | null>(null);
+  const lastMapTabKeyRef = useRef<number | null>(null);
+
+  // Home → Local Vendors (and similar): switch Places/Vendors layer
+  useEffect(() => {
+    if (!initialMapTab) return;
+    if (mapTabKey != null) {
+      if (lastMapTabKeyRef.current === mapTabKey) return;
+      lastMapTabKeyRef.current = mapTabKey;
+    }
+    setActiveTab(initialMapTab);
+    setSelectedMarker(null);
+    if (mapReady) {
+      postToWebView({ type: 'clearSelectedMarker' });
+      postToWebView({ type: 'clearRoute' });
+    }
+    if (initialMapTab === 'vendors') {
+      fetchVendors();
+    }
+  }, [initialMapTab, mapTabKey, mapReady, postToWebView, fetchVendors]);
+
   useEffect(() => {
     if (!selectedPlaceId || selectedPlaceKey == null || !mapReady) return;
     if (lastOpenedKeyRef.current === selectedPlaceKey) return;

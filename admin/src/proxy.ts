@@ -5,16 +5,17 @@ const ADMIN_TOKEN_COOKIE = "ps_admin_token";
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname.startsWith("/login")) {
+  if (pathname === "/login" || pathname.startsWith("/login/")) {
     return NextResponse.next();
   }
   // Soft gate: HttpOnly session cookie must exist for dashboard routes.
   // Full admin check still happens via /auth/me in the dashboard layout.
-  if (pathname.startsWith("/dashboard")) {
+  if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) {
     const token = request.cookies.get(ADMIN_TOKEN_COOKIE)?.value;
     if (!token) {
       const loginUrl = request.nextUrl.clone();
       loginUrl.pathname = "/login";
+      loginUrl.search = "";
       return NextResponse.redirect(loginUrl);
     }
   }
@@ -22,5 +23,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login/:path*"],
+  matcher: ["/dashboard", "/dashboard/:path*", "/login", "/login/:path*"],
 };

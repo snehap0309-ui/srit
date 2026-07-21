@@ -2,6 +2,18 @@ import { NextResponse } from "next/server";
 import { ADMIN_TOKEN_COOKIE, getBackendApiBaseUrl } from "@/lib/backendUrl";
 import { isAdminUser } from "@/lib/api";
 
+function cookieSecureFlag(request: Request): boolean {
+  // Never force Secure on plain HTTP (LAN IP / localhost) or the browser drops the cookie
+  // and every dashboard navigation looks like a logout.
+  const xfProto = request.headers.get("x-forwarded-proto");
+  if (xfProto) return xfProto.split(",")[0].trim() === "https";
+  try {
+    return new URL(request.url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: Request) {
   let body: { email?: string; password?: string };
   try {
@@ -49,7 +61,7 @@ export async function POST(request: Request) {
 
   response.cookies.set(ADMIN_TOKEN_COOKIE, accessToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: cookieSecureFlag(request),
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60, // align with 1h access token default

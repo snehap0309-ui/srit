@@ -26,20 +26,33 @@ export function getApiErrorCode(err: unknown): string | undefined {
   return (err as ApiErrorLike)?.code;
 }
 
+let handlingUnauthorized = false;
+
+function redirectToLogin() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname.startsWith("/login")) return;
+  if (handlingUnauthorized) return;
+  handlingUnauthorized = true;
+  localStorage.removeItem("user");
+  // Soft clear cookie; don't block navigation if logout fails.
+  void fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
+    window.location.href = "/login";
+  });
+}
+
 client.interceptors.response.use(
   (res) => res,
   async (err) => {
     const status = err.response?.status;
     const message = err.response?.data?.message || err.message || "Request failed";
+    const url = String(err.config?.url || "");
 
-    if (status === 401 && typeof window !== "undefined") {
-      localStorage.removeItem("user");
-      try {
-        await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-      } catch {
-        /* ignore */
-      }
-      window.location.href = "/login";
+    // Only treat session as dead for auth verification failures.
+    // Random endpoint 401s (misconfigured routes, missing scopes, etc.) must NOT
+    // wipe the admin cookie — that was logging users out on every sidebar click.
+    const isAuthMe = url.includes("/auth/me");
+    if (status === 401 && typeof window !== "undefined" && isAuthMe) {
+      redirectToLogin();
     }
 
     err.message = status === 429

@@ -11,7 +11,13 @@ export type AuthStackParamList = {
 export type MainTabParamList = {
   Home: undefined;
   Explore: undefined;
-  Map: { selectedPlaceId?: string; selectedPlaceKey?: number } | undefined;
+  Map: {
+    selectedPlaceId?: string;
+    selectedPlaceKey?: number;
+    /** Open Map on Places or Vendors layer (e.g. Home → Local Vendors) */
+    initialMapTab?: 'places' | 'vendors';
+    mapTabKey?: number;
+  } | undefined;
   Itinerary: undefined;
   Profile: undefined;
 };

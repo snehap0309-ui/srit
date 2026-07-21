@@ -101,7 +101,12 @@ function HomeTabWrapper({ places, loading, error, onRefresh }: { places: Tourist
       onNavigateToNotifications={() => navigation.navigate('Notifications')}
       onNavigateToAITripPlanner={() => navigation.navigate('AITripPlanner')}
       onNavigateToHiddenGems={() => navigation.navigate('AddHiddenGem')}
-      onNavigateToVendors={() => navigation.navigate('MainTabs', { screen: 'Map' })}
+      onNavigateToVendors={() =>
+        navigation.navigate('MainTabs', {
+          screen: 'Map',
+          params: { initialMapTab: 'vendors', mapTabKey: Date.now() },
+        })
+      }
       onNavigateToTrips={() => navigation.navigate('MainTabs', { screen: 'Itinerary' })}
       onNavigateToTreasureHunt={() => navigation.navigate('TreasureHunt')}
       onNavigateToSettings={() => navigation.navigate('Settings')}
@@ -132,12 +137,16 @@ function MapTabWrapper({
   onRefresh,
   selectedPlaceId,
   selectedPlaceKey,
+  initialMapTab,
+  mapTabKey,
 }: {
   places: TouristSpot[];
   error: string | null;
   onRefresh: () => void;
   selectedPlaceId?: string;
   selectedPlaceKey?: number;
+  initialMapTab?: 'places' | 'vendors';
+  mapTabKey?: number;
 }) {
   const { user } = useUserContext();
   const { vendors } = useDataContext();
@@ -184,6 +193,8 @@ function MapTabWrapper({
       onViewItinerary={handleViewItinerary}
       selectedPlaceId={selectedPlaceId}
       selectedPlaceKey={selectedPlaceKey}
+      initialMapTab={initialMapTab}
+      mapTabKey={mapTabKey}
     />
   );
 }
@@ -394,6 +405,8 @@ export default function MainTabs() {
             onRefresh={fetchPlaces}
             selectedPlaceId={route.params?.selectedPlaceId}
             selectedPlaceKey={route.params?.selectedPlaceKey}
+            initialMapTab={route.params?.initialMapTab}
+            mapTabKey={route.params?.mapTabKey}
           />
         )}
       </Tab.Screen>

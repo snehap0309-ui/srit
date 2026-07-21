@@ -22,6 +22,7 @@ export default function DashboardLayout({
     (async () => {
       try {
         // Session is the HttpOnly cookie; getMe goes through /api/proxy.
+        // Run once per layout mount — do not re-verify on every tab navigation.
         const user = await getMe();
         if (cancelled) return;
         if (isAdminUser(user)) {
@@ -33,20 +34,31 @@ export default function DashboardLayout({
         router.replace("/login");
       } catch (err: any) {
         if (cancelled) return;
+        const status = err?.response?.status ?? err?.status;
         const msg = err?.response?.data?.message || err?.message || "Could not verify admin session.";
-        if (err?.response?.status === 429 || err?.status === 429) {
+
+        if (status === 429) {
           setBootError(msg);
           return;
         }
-        localStorage.removeItem("user");
-        router.replace("/login");
+
+        // Only force login when the session is actually invalid/unauthorized.
+        // Network/5xx/other errors should not wipe a working login.
+        if (status === 401 || status === 403) {
+          localStorage.removeItem("user");
+          router.replace("/login");
+          return;
+        }
+
+        setBootError(msg);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- verify session once on mount only
+  }, []);
 
   if (bootError) {
     return (
