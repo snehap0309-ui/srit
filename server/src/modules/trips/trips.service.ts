@@ -351,7 +351,7 @@ export const tripsService = {
     return paginatedResponse(data, total, params);
   },
 
-  async getById(id: string, userId: string) {
+  async getById(id: string, userId: string): Promise<any> {
     const trip = await prismaTrip.findFirst({
       where: {
         id,
